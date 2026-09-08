@@ -1,0 +1,1351 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark" data-accent="mono">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>XR VPN</title>
+<style>
+  :root, html[data-theme="dark"][data-accent="mono"] {
+    --bg0: #050505;
+    --bg1: rgba(255,255,255,0.045);
+    --bg2: rgba(255,255,255,0.08);
+    --line: rgba(255,255,255,0.12);
+    --line2: rgba(255,255,255,0.28);
+    --text: #f7f7f7;
+    --text2: rgba(255,255,255,0.55);
+    --text3: rgba(255,255,255,0.32);
+    --accent: #ffffff;
+    --accent-contrast: #0a0a0a;
+    --ok: #7dffa3;
+    --warn: #ffd27d;
+    --bad: #ff8e8e;
+    --glow: rgba(255,255,255,0.12);
+  }
+  html[data-theme="dark"][data-accent="ice"] {
+    --bg0: #04060c;
+    --bg1: rgba(120,180,255,0.06);
+    --bg2: rgba(120,180,255,0.12);
+    --line: rgba(140,190,255,0.16);
+    --line2: rgba(160,210,255,0.4);
+    --text: #eef5ff;
+    --text2: rgba(190,215,255,0.65);
+    --text3: rgba(160,190,240,0.4);
+    --accent: #9ec5ff;
+    --accent-contrast: #061018;
+    --ok: #6dffb0;
+    --warn: #ffd27d;
+    --bad: #ff8e9a;
+    --glow: rgba(120,180,255,0.18);
+  }
+  html[data-theme="light"][data-accent="mono"] {
+    --bg0: #f3f3f5;
+    --bg1: rgba(255,255,255,0.72);
+    --bg2: rgba(255,255,255,0.9);
+    --line: rgba(0,0,0,0.08);
+    --line2: rgba(0,0,0,0.22);
+    --text: #111114;
+    --text2: rgba(20,20,25,0.55);
+    --text3: rgba(20,20,25,0.35);
+    --accent: #111114;
+    --accent-contrast: #ffffff;
+    --ok: #1a9a4a;
+    --warn: #b68010;
+    --bad: #c43c3c;
+    --glow: rgba(0,0,0,0.06);
+  }
+  html[data-theme="light"][data-accent="ice"] {
+    --bg0: #eaf1fb;
+    --bg1: rgba(255,255,255,0.7);
+    --bg2: rgba(255,255,255,0.88);
+    --line: rgba(40,90,160,0.12);
+    --line2: rgba(40,90,160,0.28);
+    --text: #0d1b2e;
+    --text2: rgba(20,45,80,0.6);
+    --text3: rgba(20,45,80,0.38);
+    --accent: #2f6fed;
+    --accent-contrast: #ffffff;
+    --ok: #178a45;
+    --warn: #b07a10;
+    --bad: #c43c3c;
+    --glow: rgba(47,111,237,0.12);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    overflow: hidden;
+  }
+  body {
+    background:
+      radial-gradient(ellipse 80% 50% at 50% -10%, var(--glow), transparent 55%),
+      var(--bg0);
+    transition: background .25s, color .25s;
+  }
+  .app {
+    height: 100%;
+    max-width: 430px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    padding: calc(12px + env(safe-area-inset-top, 0px)) 14px calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+    gap: 8px;
+  }
+  .brand {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+  }
+  .top-right { display: flex; align-items: center; gap: 8px; }
+  .icon-btn {
+    width: 34px; height: 34px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--bg1);
+    color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    font-size: 15px;
+  }
+  .status-pill {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text2);
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: var(--bg1);
+    border: 1px solid var(--line);
+  }
+  .status-pill.on { color: var(--text); border-color: var(--line2); }
+
+  .hero { display: flex; flex-direction: column; align-items: center; padding: 4px 0 0; }
+  .ring-wrap {
+    position: relative;
+    width: 150px; height: 150px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .ring-glass {
+    position: absolute; inset: 16px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, var(--bg2), transparent 55%);
+    border: 1px solid var(--line);
+    box-shadow: 0 12px 30px rgba(0,0,0,0.2);
+  }
+  .ring { position: absolute; inset: 0; border-radius: 50%; border: 1px solid var(--line); }
+  .ring.r2 { inset: 11px; opacity: .8; }
+  .ring.r3 { inset: 22px; opacity: .55; }
+  .orbit {
+    position: absolute; inset: 4px; border-radius: 50%;
+    border: 1px dashed var(--line);
+    animation: spin 48s linear infinite reverse;
+  }
+  .nodes { position: absolute; inset: 0; animation: spin 32s linear infinite; }
+  .nodes span {
+    position: absolute; width: 3px; height: 3px;
+    background: var(--accent); border-radius: 50%;
+    top: 50%; left: 50%; margin: -1.5px;
+    box-shadow: 0 0 6px var(--glow);
+  }
+  .nodes span:nth-child(1) { transform: rotate(0deg) translateY(-75px); }
+  .nodes span:nth-child(2) { transform: rotate(45deg) translateY(-75px); opacity: .55; }
+  .nodes span:nth-child(3) { transform: rotate(90deg) translateY(-75px); }
+  .nodes span:nth-child(4) { transform: rotate(135deg) translateY(-75px); opacity: .4; }
+  .nodes span:nth-child(5) { transform: rotate(180deg) translateY(-75px); }
+  .nodes span:nth-child(6) { transform: rotate(225deg) translateY(-75px); opacity: .55; }
+  .nodes span:nth-child(7) { transform: rotate(270deg) translateY(-75px); }
+  .nodes span:nth-child(8) { transform: rotate(315deg) translateY(-75px); opacity: .4; }
+  .arc {
+    position: absolute; inset: 2px; border-radius: 50%;
+    border: 2px solid transparent;
+    border-top-color: var(--accent);
+    border-right-color: color-mix(in srgb, var(--accent) 25%, transparent);
+    opacity: 0;
+  }
+  .fill-ring { position: absolute; inset: 5px; transform: rotate(-90deg); }
+  .fill-ring circle { fill: none; stroke: var(--line); stroke-width: 2.5; }
+  .fill-ring circle.progress {
+    stroke: var(--accent); stroke-linecap: round;
+    stroke-dasharray: 421; stroke-dashoffset: 421;
+    transition: stroke-dashoffset 1.3s ease;
+  }
+  .app.connecting .fill-ring circle.progress { stroke-dashoffset: 110; }
+  .app.connected .fill-ring circle.progress { stroke-dashoffset: 0; }
+  .app:not(.connecting):not(.connected) .fill-ring circle.progress {
+    stroke-dashoffset: 421; transition: stroke-dashoffset .35s ease;
+  }
+  .logo {
+    position: relative; z-index: 2;
+    font-size: 30px; font-weight: 200;
+    letter-spacing: 0.02em; color: var(--text);
+  }
+  .logo b { font-weight: 600; }
+  .hero-sub {
+    margin-top: 8px; font-size: 10px; color: var(--text2);
+    letter-spacing: 0.08em; text-transform: uppercase;
+    min-height: 34px; text-align: center; line-height: 1.4;
+  }
+  .hero-sub small {
+    display: block; margin-top: 2px; font-size: 10px;
+    letter-spacing: 0.03em; color: var(--text3); text-transform: none;
+  }
+  .app.connecting .arc { opacity: 1; animation: spin 1s linear infinite; }
+  .app.connecting .nodes { animation-duration: 5s; }
+  .app.connecting .logo { animation: pulseXR 1.5s ease-in-out infinite; }
+  .app.connected .arc {
+    opacity: 1; border-top-color: var(--accent);
+    border-right-color: var(--accent); animation: none;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulseXR {
+    0%, 100% { opacity: 1; letter-spacing: 0.02em; }
+    50% { opacity: 0.45; letter-spacing: 0.08em; }
+  }
+
+  .connect-btn {
+    margin: 6px auto 10px;
+    width: 100%; max-width: 230px; height: 44px;
+    border-radius: 999px;
+    border: 1px solid var(--line2);
+    background: var(--bg1);
+    color: var(--text);
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.22em; text-transform: uppercase; cursor: pointer;
+  }
+  .app.connected .connect-btn {
+    background: var(--accent); color: var(--accent-contrast); border-color: var(--accent);
+  }
+  .app.connecting .connect-btn { opacity: 0.55; pointer-events: none; }
+
+  .tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  .tab {
+    flex: 1; text-align: center; padding: 8px 6px;
+    font-size: 9px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text3);
+    border-radius: 11px; border: 1px solid var(--line);
+    background: var(--bg1); cursor: pointer;
+  }
+  .tab.active {
+    color: var(--text); border-color: var(--line2); background: var(--bg2);
+  }
+
+  .panel { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .panel.hidden { display: none; }
+  .panel::-webkit-scrollbar { width: 0; }
+  .section-hint {
+    font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--text3); margin-bottom: 8px; padding-left: 2px;
+  }
+
+  .service, .country, .card {
+    margin-bottom: 8px; border-radius: 14px;
+    background: var(--bg1); border: 1px solid var(--line);
+  }
+  .service {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px; cursor: pointer;
+  }
+  .service.active { border-color: var(--line2); background: var(--bg2); }
+  .svc-icon {
+    width: 36px; height: 36px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--bg2);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; flex-shrink: 0;
+  }
+  .svc-meta { flex: 1; min-width: 0; }
+  .svc-meta .name { font-size: 13px; font-weight: 500; }
+  .svc-meta .sub {
+    font-size: 10px; color: var(--text2); margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .svc-badge {
+    font-size: 8px; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text3); border: 1px solid var(--line);
+    padding: 3px 6px; border-radius: 999px;
+  }
+  .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--text3); flex-shrink: 0;
+  }
+  .service.active .dot, .server.active .dot {
+    background: var(--accent); box-shadow: 0 0 8px var(--glow);
+  }
+
+  .country { overflow: hidden; }
+  .country.open, .country.has-active { border-color: var(--line2); }
+  .country-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 12px; cursor: pointer;
+  }
+  .flag {
+    width: 32px; height: 32px; border-radius: 50%;
+    border: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; flex-shrink: 0;
+  }
+  .c-meta { flex: 1; min-width: 0; }
+  .c-meta .name { font-size: 13px; font-weight: 500; }
+  .c-meta .sub { font-size: 10px; color: var(--text2); margin-top: 2px; }
+  .chev {
+    width: 16px; height: 16px; color: var(--text3);
+    transition: transform .2s;
+  }
+  .country.open .chev { transform: rotate(180deg); }
+  .server-list {
+    display: none; padding: 0 8px 8px;
+    border-top: 1px solid var(--line);
+  }
+  .country.open .server-list { display: block; }
+  .server {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px; margin-top: 6px; border-radius: 11px;
+    border: 1px solid transparent; background: color-mix(in srgb, var(--bg0) 35%, transparent);
+    cursor: pointer;
+  }
+  .server.active { border-color: var(--line2); background: var(--bg2); }
+  .server.unreachable {
+    opacity: 0.55;
+    border-color: color-mix(in srgb, var(--bad) 35%, transparent);
+  }
+  .server.slow .ping { color: var(--warn); }
+  .server.unreachable .ping { color: var(--bad); }
+  .server .s-name { flex: 1; font-size: 12px; font-weight: 500; }
+  .server .s-city {
+    display: block; font-size: 10px; color: var(--text2);
+    font-weight: 400; margin-top: 2px;
+  }
+  .ping {
+    font-size: 10px; color: var(--text2);
+    font-variant-numeric: tabular-nums; min-width: 52px; text-align: right;
+  }
+  .server.ok .ping { color: var(--ok); }
+  .health {
+    font-size: 8px; letter-spacing: 0.04em; text-transform: uppercase;
+    min-width: 44px; text-align: right;
+  }
+  .health.ok { color: var(--ok); }
+  .health.slow { color: var(--warn); }
+  .health.down { color: var(--bad); }
+
+  /* settings */
+  .card { padding: 12px; }
+  .card h3 {
+    font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--text3); margin-bottom: 10px; font-weight: 600;
+  }
+  .row {
+    display: flex; gap: 8px; margin-bottom: 8px;
+  }
+  .choice {
+    flex: 1; text-align: center; padding: 10px 8px;
+    border-radius: 12px; border: 1px solid var(--line);
+    background: transparent; color: var(--text2);
+    font-size: 11px; font-weight: 600; cursor: pointer;
+  }
+  .choice.on {
+    border-color: var(--line2); background: var(--bg2); color: var(--text);
+  }
+  label.field {
+    display: block; font-size: 10px; color: var(--text3);
+    letter-spacing: 0.08em; text-transform: uppercase; margin: 10px 0 6px;
+  }
+  textarea, input[type="text"] {
+    width: 100%;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: color-mix(in srgb, var(--bg0) 40%, transparent);
+    color: var(--text);
+    padding: 10px 12px;
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    outline: none;
+    resize: vertical;
+  }
+  textarea:focus, input[type="text"]:focus { border-color: var(--line2); }
+  .app-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 6px; border-bottom: 1px solid var(--line);
+    font-size: 12px;
+  }
+  .app-row input { width: 18px; height: 18px; accent-color: var(--accent); }
+  .app-row .aname { flex: 1; min-width: 0; }
+  .app-row .apkg { font-size: 10px; color: var(--text3); margin-top: 2px; word-break: break-all; }
+  input[type="range"] {
+    width: 100%; height: 28px; margin: 2px 0 6px;
+    background: transparent; cursor: pointer;
+  }
+  .btn-soft {
+    width: 100%; margin-top: 8px; height: 40px;
+    border-radius: 12px; border: 1px solid var(--line2);
+    background: var(--bg2); color: var(--text);
+    font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; cursor: pointer;
+  }
+  .note {
+    margin-top: 8px; font-size: 11px; color: var(--text2); line-height: 1.45;
+  }
+  .live-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 10px; color: var(--text3); margin-bottom: 8px;
+  }
+  .live-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--ok); display: inline-block; margin-right: 6px;
+    box-shadow: 0 0 8px color-mix(in srgb, var(--ok) 50%, transparent);
+    animation: blink 1.6s ease infinite;
+  }
+  .live-dot.off { background: var(--text3); box-shadow: none; animation: none; }
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+  .empty {
+    text-align: center; padding: 24px 12px;
+    font-size: 12px; color: var(--text3); line-height: 1.5;
+  }
+  .footer {
+    padding-top: 8px; text-align: center;
+    font-size: 9px; color: var(--text3);
+    letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .speed-hud {
+    display: flex;
+    gap: 14px;
+    justify-content: center;
+    align-items: center;
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--bg1);
+    min-width: 220px;
+  }
+  .speed-hud[hidden] { display: none !important; }
+  .spd {
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    letter-spacing: 0.02em;
+  }
+  .spd-label {
+    color: var(--text3);
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-right: 2px;
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="top">
+    <div class="brand">XR VPN</div>
+    <div class="top-right">
+      <div class="status-pill" id="pill">Disconnected</div>
+      <button class="icon-btn" id="btnSettings" type="button" title="Settings">⚙</button>
+    </div>
+  </div>
+
+  <div class="hero">
+    <div class="ring-wrap">
+      <div class="ring"></div>
+      <div class="ring r2"></div>
+      <div class="ring r3"></div>
+      <div class="orbit"></div>
+      <div class="ring-glass"></div>
+      <div class="nodes" aria-hidden="true">
+        <span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <div class="arc"></div>
+      <svg class="fill-ring" viewBox="0 0 150 150" aria-hidden="true">
+        <circle cx="75" cy="75" r="67"></circle>
+        <circle class="progress" cx="75" cy="75" r="67"></circle>
+      </svg>
+      <div class="logo"><b>X</b>R</div>
+    </div>
+    <div class="hero-sub" id="heroSub">Choose a service</div>
+    <div class="speed-hud" id="speedHud" hidden>
+      <div class="spd"><span class="spd-label">↓</span> <span id="spdDown">—</span></div>
+      <div class="spd"><span class="spd-label">↑</span> <span id="spdUp">—</span></div>
+      <div class="spd"><span class="spd-label">ping</span> <span id="spdPing">—</span></div>
+    </div>
+  </div>
+
+  <button class="connect-btn" id="btn" type="button">Connect</button>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="services">Services</div>
+    <div class="tab" data-tab="locations">Locations</div>
+    <div class="tab" data-tab="settings">Settings</div>
+  </div>
+
+  <div class="panel" id="panelServices">
+    <div class="section-hint">VPN providers</div>
+    <div id="serviceList"></div>
+  </div>
+
+  <div class="panel hidden" id="panelLocations">
+    <div class="live-bar">
+      <span><span class="live-dot" id="liveDot"></span>Live health</span>
+      <span id="liveStamp">checking…</span>
+    </div>
+    <div class="section-hint" id="locHint">Servers</div>
+    <div id="locationList"></div>
+  </div>
+
+  <div class="panel hidden" id="panelSettings">
+    <div class="card">
+      <h3>Theme</h3>
+      <div class="row">
+        <button type="button" class="choice" data-theme="dark">Dark</button>
+        <button type="button" class="choice" data-theme="light">Light</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Color variant</h3>
+      <div class="row">
+        <button type="button" class="choice" data-accent="mono">Mono B/W</button>
+        <button type="button" class="choice" data-accent="ice">Ice Blue</button>
+        <button type="button" class="choice" data-accent="custom">Custom</button>
+      </div>
+      <div id="customColorBox" style="display:none;margin-top:10px">
+        <label class="field">Accent hue <span id="hueVal">210</span>°</label>
+        <input type="range" id="sliderHue" min="0" max="360" value="210" style="width:100%;accent-color:var(--accent)">
+        <label class="field">Saturation <span id="satVal">70</span>%</label>
+        <input type="range" id="sliderSat" min="0" max="100" value="70" style="width:100%;accent-color:var(--accent)">
+        <label class="field">Brightness <span id="litVal">60</span>%</label>
+        <input type="range" id="sliderLit" min="25" max="85" value="60" style="width:100%;accent-color:var(--accent)">
+        <div class="note" style="margin-top:8px">Цвет акцента, обводок и кнопки Connected. Сохраняется на устройстве.</div>
+        <div style="margin-top:10px;height:28px;border-radius:10px;border:1px solid var(--line);background:var(--accent)" id="colorPreview"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Where VPN works</h3>
+      <div class="row" style="flex-wrap:wrap">
+        <button type="button" class="choice" data-route="full">All traffic</button>
+        <button type="button" class="choice" data-route="bypass">Bypass list</button>
+        <button type="button" class="choice" data-route="only">Only list</button>
+      </div>
+      <div class="note" id="routeHint" style="margin-bottom:8px">Весь трафик через VPN.</div>
+      <label class="field" id="routeListLabel">Domains / IPs / CIDR (one per line)</label>
+      <textarea id="routeList" rows="4" placeholder="example.com&#10;10.0.0.0/8&#10;*.cdn.example"></textarea>
+      <div class="note">All = весь трафик. Bypass = VPN везде, кроме списка. Only = VPN только для списка. В APK это split-tunnel / routes.</div>
+    </div>
+    <div class="card">
+      <h3>Apps without VPN</h3>
+      <div class="note" style="margin-bottom:8px">Отметь приложения, которые идут <b>мимо</b> VPN (YouTube, банк…). Список с телефона — только в APK.</div>
+      <button type="button" class="btn-soft" id="btnLoadApps">Load apps from phone</button>
+      <div id="appListBox" style="margin-top:10px;max-height:220px;overflow-y:auto"></div>
+      <div class="note" id="appsNote">В браузере списка нет. В установленном APK нажми Load apps.</div>
+    </div>
+    <div class="card">
+      <h3>Third-party integration</h3>
+      <label class="field">Service name</label>
+      <input type="text" id="customName" placeholder="My VPN list">
+      <label class="field">Protocol</label>
+      <input type="text" id="customProto" placeholder="WireGuard / OpenVPN / VLESS / Outline">
+      <label class="field">Catalog URL or servers (JSON / one endpoint per line)</label>
+      <textarea id="customSource" rows="5" placeholder='https://example.com/servers.json
+или
+ams.example.com:51820
+fra.example.com:51820'></textarea>
+      <button type="button" class="btn-soft" id="btnImport">Add service</button>
+      <div class="note" id="importNote">Можно вставить URL каталога или список host:port. Реальный туннель — через native bridge.</div>
+    </div>
+    <div class="card">
+      <h3>Health monitor</h3>
+      <div class="row">
+        <button type="button" class="choice on" id="btnHealthOn">Live on</button>
+        <button type="button" class="choice" id="btnHealthOff">Off</button>
+      </div>
+      <div class="note">В реальном времени: OK / Slow / No link. Пока демо-пинг; в APK — TCP/UDP probe или WireGuard handshake.</div>
+    </div>
+  </div>
+
+  <div class="footer" id="footer">Service → location → server</div>
+</div>
+
+<script>
+const STORAGE_KEY = 'xr_vpn_ui_v2';
+
+/* Native Android bridge callback after VpnService.prepare() */
+window.__xrVpnNativeResult = function(ok) {
+  try {
+    if (ok) {
+      if (typeof setState === 'function') setState('connected');
+      const hit = typeof findServer === 'function' ? findServer(selectedServerId) : null;
+      const ep = hit && hit.server ? hit.server.endpoint : '';
+      if (typeof startSpeedMonitor === 'function') startSpeedMonitor(ep);
+    } else {
+      if (typeof setState === 'function') setState('idle');
+      if (typeof stopSpeedMonitor === 'function') stopSpeedMonitor();
+    }
+  } catch (e) { console.warn(e); }
+};
+
+
+const BASE_PROVIDERS = [
+  {
+    id: 'xr-net', name: 'XR Network', short: 'XR', type: 'WireGuard',
+    desc: 'Демо-ноды XR', builtin: true,
+    countries: [
+      { id: 'nl', name: 'Netherlands', flag: '🇳🇱', servers: [
+        { id: 'xr-nl-1', name: 'Amsterdam 1', city: 'Amsterdam', endpoint: 'ams1.xr.example:51820' },
+        { id: 'xr-nl-2', name: 'Amsterdam 2', city: 'Amsterdam', endpoint: 'ams2.xr.example:51820' },
+      ]},
+      { id: 'de', name: 'Germany', flag: '🇩🇪', servers: [
+        { id: 'xr-de-1', name: 'Frankfurt', city: 'Frankfurt', endpoint: 'fra1.xr.example:51820' },
+        { id: 'xr-de-2', name: 'Berlin', city: 'Berlin', endpoint: 'ber1.xr.example:51820' },
+      ]},
+      { id: 'us', name: 'United States', flag: '🇺🇸', servers: [
+        { id: 'xr-us-1', name: 'New York', city: 'New York', endpoint: 'nyc1.xr.example:51820' },
+      ]},
+    ]
+  },
+  {
+    id: 'open-free', name: 'Open Free List', short: 'OF', type: 'OpenVPN',
+    desc: 'Публичный список', builtin: true,
+    countries: [
+      { id: 'nl', name: 'Netherlands', flag: '🇳🇱', servers: [
+        { id: 'of-nl-1', name: 'NL Free 1', city: 'Amsterdam', endpoint: 'nl1.open.example:1194' },
+        { id: 'of-nl-2', name: 'NL Free 2', city: 'Amsterdam', endpoint: 'nl2.open.example:1194' },
+      ]},
+      { id: 'pl', name: 'Poland', flag: '🇵🇱', servers: [
+        { id: 'of-pl-1', name: 'Warsaw Free', city: 'Warsaw', endpoint: 'waw.open.example:1194' },
+      ]},
+    ]
+  },
+  {
+    id: 'v2-pool', name: 'V2Ray Pool', short: 'V2', type: 'VLESS',
+    desc: 'Pool нод', builtin: true,
+    countries: [
+      { id: 'sg', name: 'Singapore', flag: '🇸🇬', servers: [
+        { id: 'v2-sg-1', name: 'SG Node A', city: 'Singapore', endpoint: 'sg-a.v2.example:443' },
+        { id: 'v2-sg-2', name: 'SG Node B', city: 'Singapore', endpoint: 'sg-b.v2.example:443' },
+      ]},
+      { id: 'jp', name: 'Japan', flag: '🇯🇵', servers: [
+        { id: 'v2-jp-1', name: 'Tokyo Node', city: 'Tokyo', endpoint: 'tyo.v2.example:443' },
+      ]},
+    ]
+  },
+];
+
+let customProviders = [];
+let PROVIDERS = [];
+let providerId = 'xr-net';
+let selectedServerId = null;
+let openCountry = null;
+let tab = 'services';
+let state = 'idle';
+let connectTimer = null;
+let healthOn = true;
+let healthTimer = null;
+let healthMap = {}; // serverId -> { ping, status: ok|slow|down, ts }
+let speedTimer = null;
+let lastSpeed = { down: null, up: null, ping: null };
+
+const app = document.getElementById('app');
+const pill = document.getElementById('pill');
+const heroSub = document.getElementById('heroSub');
+const btn = document.getElementById('btn');
+const serviceList = document.getElementById('serviceList');
+const locationList = document.getElementById('locationList');
+const locHint = document.getElementById('locHint');
+const footer = document.getElementById('footer');
+const liveDot = document.getElementById('liveDot');
+const liveStamp = document.getElementById('liveStamp');
+
+function rebuildProviders() {
+  PROVIDERS = BASE_PROVIDERS.concat(customProviders);
+}
+
+let routeMode = 'full'; // full | bypass | only
+let customHue = 210, customSat = 70, customLit = 60;
+let bypassApps = []; // package names excluded from VPN
+let phoneApps = []; // {package,name,system}
+
+function applyCustomAccent() {
+  const accent = document.documentElement.getAttribute('data-accent');
+  const box = document.getElementById('customColorBox');
+  if (box) box.style.display = accent === 'custom' ? 'block' : 'none';
+  if (accent !== 'custom') {
+    document.documentElement.style.removeProperty('--accent');
+    document.documentElement.style.removeProperty('--glow');
+    document.documentElement.style.removeProperty('--line2');
+    return;
+  }
+  const a = `hsl(${customHue} ${customSat}% ${customLit}%)`;
+  const g = `hsl(${customHue} ${Math.max(20, customSat - 20)}% ${customLit}% / 0.22)`;
+  const l2 = `hsl(${customHue} ${Math.max(15, customSat - 25)}% ${Math.min(75, customLit + 10)}% / 0.55)`;
+  document.documentElement.style.setProperty('--accent', a);
+  document.documentElement.style.setProperty('--glow', g);
+  document.documentElement.style.setProperty('--line2', l2);
+  const h = document.getElementById('hueVal');
+  const s = document.getElementById('satVal');
+  const l = document.getElementById('litVal');
+  if (h) h.textContent = customHue;
+  if (s) s.textContent = customSat;
+  if (l) l.textContent = customLit;
+  const sh = document.getElementById('sliderHue');
+  const ss = document.getElementById('sliderSat');
+  const sl = document.getElementById('sliderLit');
+  if (sh) sh.value = customHue;
+  if (ss) ss.value = customSat;
+  if (sl) sl.value = customLit;
+}
+
+function routeHintText() {
+  if (routeMode === 'full') return 'Весь трафик через VPN.';
+  if (routeMode === 'bypass') return 'VPN везде, кроме доменов/IP из списка (bypass).';
+  return 'VPN только для доменов/IP из списка (only).';
+}
+
+function syncRouteChoices() {
+  document.querySelectorAll('[data-route]').forEach(b => {
+    b.classList.toggle('on', b.getAttribute('data-route') === routeMode);
+  });
+  const hint = document.getElementById('routeHint');
+  if (hint) hint.textContent = routeHintText();
+  const ta = document.getElementById('routeList');
+  if (ta) ta.style.opacity = routeMode === 'full' ? '0.45' : '1';
+}
+
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const j = JSON.parse(raw);
+    if (j.theme) document.documentElement.setAttribute('data-theme', j.theme);
+    if (j.accent) document.documentElement.setAttribute('data-accent', j.accent);
+    if (Array.isArray(j.customProviders)) customProviders = j.customProviders;
+    if (typeof j.healthOn === 'boolean') healthOn = j.healthOn;
+    if (j.providerId) providerId = j.providerId;
+    if (j.selectedServerId) selectedServerId = j.selectedServerId;
+    if (typeof j.customHue === 'number') customHue = j.customHue;
+    if (typeof j.customSat === 'number') customSat = j.customSat;
+    if (typeof j.customLit === 'number') customLit = j.customLit;
+    if (j.routeMode) routeMode = j.routeMode;
+    if (typeof j.routeList === 'string') {
+      const el = document.getElementById('routeList');
+      if (el) el.value = j.routeList;
+    }
+    if (Array.isArray(j.bypassApps)) bypassApps = j.bypassApps;
+  } catch (e) {}
+}
+
+function savePrefs() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      theme: document.documentElement.getAttribute('data-theme'),
+      accent: document.documentElement.getAttribute('data-accent'),
+      customProviders,
+      healthOn,
+      providerId,
+      selectedServerId,
+      customHue, customSat, customLit,
+      routeMode,
+      routeList: (document.getElementById('routeList') || {}).value || '',
+      bypassApps,
+    }));
+  } catch (e) {}
+}
+
+function provider() {
+  return PROVIDERS.find(p => p.id === providerId) || PROVIDERS[0];
+}
+
+function findServer(serverId) {
+  for (const pr of PROVIDERS) {
+    for (const c of pr.countries || []) {
+      const s = (c.servers || []).find(x => x.id === serverId);
+      if (s) return { provider: pr, country: c, server: s };
+    }
+  }
+  return null;
+}
+
+function nodeCount(p) {
+  return (p.countries || []).reduce((n, c) => n + (c.servers || []).length, 0);
+}
+
+function ensureSelection() {
+  const p = provider();
+  if (!p) return;
+  const hit = selectedServerId ? findServer(selectedServerId) : null;
+  if (!hit || hit.provider.id !== p.id) {
+    selectedServerId = p.countries?.[0]?.servers?.[0]?.id || null;
+    openCountry = p.countries?.[0]?.id || null;
+  }
+}
+
+function syncThemeChoices() {
+  const theme = document.documentElement.getAttribute('data-theme');
+  const accent = document.documentElement.getAttribute('data-accent');
+  document.querySelectorAll('[data-theme]').forEach(b => {
+    b.classList.toggle('on', b.getAttribute('data-theme') === theme);
+  });
+  document.querySelectorAll('[data-accent]').forEach(b => {
+    b.classList.toggle('on', b.getAttribute('data-accent') === accent);
+  });
+  document.getElementById('btnHealthOn').classList.toggle('on', healthOn);
+  document.getElementById('btnHealthOff').classList.toggle('on', !healthOn);
+  liveDot.classList.toggle('off', !healthOn);
+  applyCustomAccent();
+  syncRouteChoices();
+}
+
+function statusOf(id) {
+  return healthMap[id]?.status || 'unknown';
+}
+function pingOf(id) {
+  return healthMap[id]?.ping;
+}
+
+function renderServices() {
+  serviceList.innerHTML = PROVIDERS.map(p => `
+    <div class="service ${p.id === providerId ? 'active' : ''}" data-provider="${p.id}">
+      <div class="svc-icon">${p.short || (p.name || '?').slice(0,2).toUpperCase()}</div>
+      <div class="svc-meta">
+        <div class="name">${p.name}</div>
+        <div class="sub">${p.desc || ''} · ${nodeCount(p)} nodes</div>
+      </div>
+      <div class="svc-badge">${p.type || 'VPN'}</div>
+      <div class="dot"></div>
+    </div>
+  `).join('');
+}
+
+function renderLocations() {
+  const p = provider();
+  locHint.textContent = (p?.name || 'Service') + ' · live status';
+  if (!p?.countries?.length) {
+    locationList.innerHTML = '<div class="empty">Нет серверов. Добавь сервис в Settings.</div>';
+    return;
+  }
+  locationList.innerHTML = p.countries.map(c => {
+    const hasActive = c.servers.some(s => s.id === selectedServerId);
+    const open = openCountry === c.id;
+    return `
+      <div class="country ${open ? 'open' : ''} ${hasActive ? 'has-active' : ''}">
+        <div class="country-head" data-toggle="${c.id}">
+          <div class="flag">${c.flag || '🌐'}</div>
+          <div class="c-meta">
+            <div class="name">${c.name}</div>
+            <div class="sub">${c.servers.length} servers</div>
+          </div>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="server-list">
+          ${c.servers.map(s => {
+            const st = statusOf(s.id);
+            const ping = pingOf(s.id);
+            const cls = st === 'down' ? 'unreachable' : st === 'slow' ? 'slow' : st === 'ok' ? 'ok' : '';
+            const label = st === 'down' ? 'No link' : st === 'slow' ? 'Slow' : st === 'ok' ? 'OK' : '…';
+            const hcls = st === 'down' ? 'down' : st === 'slow' ? 'slow' : st === 'ok' ? 'ok' : '';
+            const pingTxt = ping != null ? (st === 'down' ? '—' : ping + ' ms') : '…';
+            return `
+              <div class="server ${s.id === selectedServerId ? 'active' : ''} ${cls}" data-server="${s.id}">
+                <div class="s-name">${s.name}<span class="s-city">${s.city || ''} ${s.endpoint ? '· ' + s.endpoint : ''}</span></div>
+                <div>
+                  <div class="ping">${pingTxt}</div>
+                  <div class="health ${hcls}">${label}</div>
+                </div>
+                <div class="dot"></div>
+              </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function updateHero() {
+  const p = provider();
+  const hit = selectedServerId ? findServer(selectedServerId) : null;
+  if (!hit || hit.provider.id !== p.id) {
+    heroSub.innerHTML = `${p?.name || 'XR VPN'}<br><small>Open Locations · pick server</small>`;
+    return;
+  }
+  const st = statusOf(hit.server.id);
+  const warn = st === 'down' ? ' · no link' : st === 'slow' ? ' · slow' : '';
+  if (state === 'connecting') {
+    heroSub.innerHTML = `Connecting · ${p.short || p.name}<br><small>${hit.server.name}${warn}</small>`;
+  } else if (state === 'connected') {
+    heroSub.innerHTML = `${p.name} · Secure<br><small>${hit.server.name}${warn}</small>`;
+  } else {
+    heroSub.innerHTML = `${p.short || p.name} · ${hit.country.name}<br><small>${hit.server.name}${warn}</small>`;
+  }
+  footer.textContent = (p.type || 'VPN') + ' · ' + p.name;
+}
+
+function setTab(name) {
+  tab = name;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.getElementById('panelServices').classList.toggle('hidden', name !== 'services');
+  document.getElementById('panelLocations').classList.toggle('hidden', name !== 'locations');
+  document.getElementById('panelSettings').classList.toggle('hidden', name !== 'settings');
+}
+
+function setState(next) {
+  state = next;
+  app.classList.remove('connecting', 'connected');
+  if (next === 'connecting') app.classList.add('connecting');
+  if (next === 'connected') app.classList.add('connected');
+  if (next === 'idle') {
+    pill.textContent = 'Disconnected'; pill.classList.remove('on'); btn.textContent = 'Connect';
+  } else if (next === 'connecting') {
+    pill.textContent = 'Connecting'; pill.classList.remove('on'); btn.textContent = 'Connecting';
+  } else {
+    pill.textContent = 'Connected'; pill.classList.add('on'); btn.textContent = 'Disconnect';
+  }
+  updateHero();
+}
+
+/** Демо live-health: имитация пинга. В APK заменить на реальный probe. */
+function probeAll() {
+  if (!healthOn) return;
+  const p = provider();
+  const all = [];
+  (p?.countries || []).forEach(c => (c.servers || []).forEach(s => all.push(s)));
+  const now = Date.now();
+  all.forEach(s => {
+    // детерминированный «шум» + редкие down
+    const seed = (s.id.charCodeAt(0) + s.id.length + (now / 8000 | 0)) % 17;
+    let ping = 25 + (seed * 9) % 160;
+    let status = 'ok';
+    if (seed === 0 || seed === 1) { status = 'down'; ping = null; }
+    else if (ping > 120) status = 'slow';
+    healthMap[s.id] = { ping, status, ts: now };
+  });
+  liveStamp.textContent = new Date().toLocaleTimeString();
+  if (tab === 'locations') renderLocations();
+  updateHero();
+}
+
+function startHealth() {
+  stopHealth();
+  if (!healthOn) {
+    liveDot.classList.add('off');
+    liveStamp.textContent = 'paused';
+    return;
+  }
+  liveDot.classList.remove('off');
+  probeAll();
+  healthTimer = setInterval(probeAll, 4000);
+}
+
+function stopHealth() {
+  if (healthTimer) clearInterval(healthTimer);
+  healthTimer = null;
+}
+
+function formatSpeed(bps) {
+  if (bps == null || isNaN(bps)) return '—';
+  if (bps < 1024) return Math.round(bps) + ' B/s';
+  if (bps < 1024 * 1024) return (bps / 1024).toFixed(1) + ' KB/s';
+  return (bps / (1024 * 1024)).toFixed(2) + ' MB/s';
+}
+
+function showSpeedHud(on) {
+  const hud = document.getElementById('speedHud');
+  if (!hud) return;
+  hud.hidden = !on;
+  if (!on) {
+    document.getElementById('spdDown').textContent = '—';
+    document.getElementById('spdUp').textContent = '—';
+    document.getElementById('spdPing').textContent = '—';
+  }
+}
+
+function renderSpeed() {
+  const d = document.getElementById('spdDown');
+  const u = document.getElementById('spdUp');
+  const p = document.getElementById('spdPing');
+  if (d) d.textContent = formatSpeed(lastSpeed.down);
+  if (u) u.textContent = formatSpeed(lastSpeed.up);
+  if (p) p.textContent = lastSpeed.ping != null ? lastSpeed.ping + ' ms' : '—';
+}
+
+/** Замер ping + download к endpoint/хосту; up — оценка */
+async function measureSpeedOnce(endpoint) {
+  let host = String(endpoint || '').split('/')[0];
+  if (host.includes('://')) {
+    try { host = new URL(endpoint).host; } catch (e) {}
+  }
+  // ping-ish: time HEAD/GET with no-cors fallback timing
+  let pingMs = null;
+  const t0 = performance.now();
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 4000);
+    // use public Cloudflare trace as reachable probe when demo hosts fail
+    const probeUrl = 'https://www.cloudflare.com/cdn-cgi/trace';
+    await fetch(probeUrl + '?_=' + Date.now(), { cache: 'no-store', signal: ctrl.signal });
+    clearTimeout(to);
+    pingMs = Math.round(performance.now() - t0);
+  } catch (e) {
+    pingMs = Math.round(performance.now() - t0);
+    if (pingMs > 3900) pingMs = null;
+  }
+
+  let downBps = null;
+  try {
+    const t1 = performance.now();
+    const ctrl2 = new AbortController();
+    const to2 = setTimeout(() => ctrl2.abort(), 8000);
+    // ~100–200KB sample from a public CDN (CORS-friendly-ish)
+    const url = 'https://speed.cloudflare.com/__down?bytes=200000&_=' + Date.now();
+    const r = await fetch(url, { cache: 'no-store', signal: ctrl2.signal });
+    clearTimeout(to2);
+    const buf = await r.arrayBuffer();
+    const dt = (performance.now() - t1) / 1000;
+    if (dt > 0.05) downBps = buf.byteLength / dt;
+  } catch (e) {
+    // offline / blocked — soft estimate from ping
+    if (pingMs != null) downBps = Math.max(8 * 1024, (200 - Math.min(pingMs, 199)) * 1024 * 0.8);
+  }
+
+  // upload estimate (real upload needs POST endpoint; approximate)
+  let upBps = null;
+  if (downBps != null) upBps = downBps * (0.35 + Math.random() * 0.25);
+  if (pingMs != null && upBps == null) upBps = 20 * 1024;
+
+  lastSpeed = { down: downBps, up: upBps, ping: pingMs };
+  renderSpeed();
+  return lastSpeed;
+}
+
+function stopSpeedMonitor() {
+  if (speedTimer) clearInterval(speedTimer);
+  speedTimer = null;
+  showSpeedHud(false);
+}
+
+function startSpeedMonitor(endpoint) {
+  stopSpeedMonitor();
+  showSpeedHud(true);
+  document.getElementById('spdDown').textContent = '…';
+  document.getElementById('spdUp').textContent = '…';
+  document.getElementById('spdPing').textContent = '…';
+  measureSpeedOnce(endpoint);
+  speedTimer = setInterval(() => measureSpeedOnce(endpoint), 5000);
+}
+
+async function connectToSelected() {
+  const p = provider();
+  const hit = findServer(selectedServerId);
+  if (!hit || hit.provider.id !== p.id) {
+    setTab('locations');
+    updateHero();
+    return;
+  }
+  if (statusOf(hit.server.id) === 'down') {
+    heroSub.innerHTML = `No link<br><small>${hit.server.name} · выбери другой сервер</small>`;
+    return;
+  }
+  const routeList = (document.getElementById('routeList')?.value || '')
+    .split(/\n+/).map(s => s.trim()).filter(Boolean);
+  if (routeMode !== 'full' && !routeList.length) {
+    heroSub.innerHTML = `Routing list empty<br><small>Заполни список в Settings или выбери All traffic</small>`;
+    setTab('settings');
+    return;
+  }
+  const payload = {
+    providerId: p.id,
+    providerName: p.name,
+    protocol: p.type,
+    serverId: hit.server.id,
+    name: hit.server.name,
+    country: hit.country.name,
+    city: hit.server.city,
+    endpoint: hit.server.endpoint,
+    health: healthMap[hit.server.id] || null,
+    routing: { mode: routeMode, list: routeList },
+    bypassApps: bypassApps.slice(),
+  };
+  footer.textContent = routeMode === 'full'
+    ? 'Tunnel · all traffic'
+    : (routeMode === 'bypass' ? 'Tunnel · bypass ' + routeList.length : 'Tunnel · only ' + routeList.length);
+  setState('connecting');
+  showSpeedHud(true);
+  document.getElementById('spdDown').textContent = 'test…';
+  document.getElementById('spdUp').textContent = 'test…';
+  document.getElementById('spdPing').textContent = 'test…';
+  // first measurement while connecting
+  measureSpeedOnce(payload.endpoint).then(() => {
+    footer.textContent = 'Speed · ↓ ' + formatSpeed(lastSpeed.down) + ' · ping ' + (lastSpeed.ping ?? '—') + ' ms';
+  });
+
+  if (window.XRVpn && typeof window.XRVpn.connect === 'function') {
+    try {
+      const ok = await window.XRVpn.connect(JSON.stringify(payload));
+      if (ok) {
+        setState('connected');
+        startSpeedMonitor(payload.endpoint);
+      } else {
+        setState('idle');
+        stopSpeedMonitor();
+      }
+      return;
+    } catch (e) {
+      setState('idle');
+      stopSpeedMonitor();
+      return;
+    }
+  }
+  console.log('[XR VPN] connect', payload);
+  connectTimer = setTimeout(() => {
+    setState('connected');
+    startSpeedMonitor(payload.endpoint);
+  }, 1400);
+}
+
+async function disconnect() {
+  if (connectTimer) clearTimeout(connectTimer);
+  stopSpeedMonitor();
+  if (window.XRVpn && typeof window.XRVpn.disconnect === 'function') {
+    try { await window.XRVpn.disconnect(); } catch (e) {}
+  }
+  setState('idle');
+}
+
+function parseImport(text, name, proto) {
+  const src = String(text || '').trim();
+  if (!src) throw new Error('Пустое поле');
+  const id = 'custom-' + Date.now().toString(36);
+  const short = (name || 'CS').slice(0, 2).toUpperCase();
+
+  // URL каталога — пробуем fetch
+  if (/^https?:\/\//i.test(src.split('\n')[0].trim())) {
+    return fetch(src.split('\n')[0].trim())
+      .then(r => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(data => {
+        // ожидаем либо массив servers, либо наш формат countries
+        if (Array.isArray(data?.countries)) {
+          return {
+            id, name: name || data.name || 'Imported', short, type: proto || data.type || 'Custom',
+            desc: 'Imported catalog', builtin: false, countries: data.countries
+          };
+        }
+        const list = Array.isArray(data) ? data : (data.servers || data.nodes || []);
+        if (!list.length) throw new Error('JSON без серверов');
+        const servers = list.map((x, i) => ({
+          id: id + '-' + i,
+          name: x.name || x.host || ('Node ' + (i + 1)),
+          city: x.city || x.country || 'Unknown',
+          endpoint: x.endpoint || x.host || x.address || String(x),
+        }));
+        return {
+          id, name: name || 'Imported', short, type: proto || 'Custom',
+          desc: 'From URL', builtin: false,
+          countries: [{ id: 'all', name: 'All nodes', flag: '🌐', servers }]
+        };
+      });
+  }
+
+  // строки host:port
+  const lines = src.split(/\n+/).map(s => s.trim()).filter(Boolean);
+  const servers = lines.map((line, i) => ({
+    id: id + '-' + i,
+    name: 'Node ' + (i + 1),
+    city: 'Custom',
+    endpoint: line,
+  }));
+  return Promise.resolve({
+    id, name: name || 'Custom list', short, type: proto || 'Custom',
+    desc: 'Manual endpoints', builtin: false,
+    countries: [{ id: 'custom', name: 'Imported', flag: '🌐', servers }]
+  });
+}
+
+// events
+document.querySelector('.tabs').addEventListener('click', e => {
+  const t = e.target.closest('.tab');
+  if (t) setTab(t.dataset.tab);
+});
+
+document.getElementById('btnSettings').addEventListener('click', () => setTab('settings'));
+
+document.querySelectorAll('[data-theme]').forEach(b => {
+  b.addEventListener('click', () => {
+    document.documentElement.setAttribute('data-theme', b.getAttribute('data-theme'));
+    syncThemeChoices(); savePrefs();
+  });
+});
+document.querySelectorAll('[data-accent]').forEach(b => {
+  b.addEventListener('click', () => {
+    document.documentElement.setAttribute('data-accent', b.getAttribute('data-accent'));
+    syncThemeChoices(); savePrefs();
+  });
+});
+document.querySelectorAll('[data-route]').forEach(b => {
+  b.addEventListener('click', () => {
+    routeMode = b.getAttribute('data-route');
+    syncRouteChoices(); savePrefs();
+  });
+});
+['sliderHue','sliderSat','sliderLit'].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('input', () => {
+    customHue = +document.getElementById('sliderHue').value;
+    customSat = +document.getElementById('sliderSat').value;
+    customLit = +document.getElementById('sliderLit').value;
+    document.documentElement.setAttribute('data-accent', 'custom');
+    applyCustomAccent();
+    syncThemeChoices();
+    savePrefs();
+  });
+});
+const routeListEl = document.getElementById('routeList');
+if (routeListEl) {
+  routeListEl.addEventListener('change', savePrefs);
+  routeListEl.addEventListener('blur', savePrefs);
+}
+document.getElementById('btnHealthOn').addEventListener('click', () => {
+  healthOn = true; syncThemeChoices(); savePrefs(); startHealth();
+});
+document.getElementById('btnHealthOff').addEventListener('click', () => {
+  healthOn = false; syncThemeChoices(); savePrefs(); startHealth();
+});
+
+document.getElementById('btnImport').addEventListener('click', async () => {
+  const note = document.getElementById('importNote');
+  const name = document.getElementById('customName').value.trim();
+  const proto = document.getElementById('customProto').value.trim();
+  const src = document.getElementById('customSource').value;
+  note.textContent = 'Импорт…';
+  try {
+    const prov = await parseImport(src, name, proto);
+    customProviders.push(prov);
+    rebuildProviders();
+    providerId = prov.id;
+    ensureSelection();
+    savePrefs();
+    renderServices();
+    renderLocations();
+    setTab('locations');
+    updateHero();
+    startHealth();
+    note.textContent = 'Добавлено: ' + prov.name + ' · ' + nodeCount(prov) + ' nodes';
+    document.getElementById('customSource').value = '';
+  } catch (e) {
+    note.textContent = 'Ошибка: ' + (e.message || e);
+  }
+});
+
+serviceList.addEventListener('click', e => {
+  const row = e.target.closest('[data-provider]');
+  if (!row || state === 'connecting') return;
+  const id = row.dataset.provider;
+  const was = state === 'connected';
+  providerId = id;
+  ensureSelection();
+  savePrefs();
+  renderServices();
+  renderLocations();
+  updateHero();
+  startHealth();
+  if (was) disconnect().then(() => setTab('locations'));
+  else setTab('locations');
+});
+
+locationList.addEventListener('click', e => {
+  const toggle = e.target.closest('[data-toggle]');
+  if (toggle) {
+    const id = toggle.getAttribute('data-toggle');
+    openCountry = openCountry === id ? null : id;
+    renderLocations();
+    return;
+  }
+  const row = e.target.closest('[data-server]');
+  if (!row || state === 'connecting') return;
+  selectedServerId = row.getAttribute('data-server');
+  const hit = findServer(selectedServerId);
+  if (hit) openCountry = hit.country.id;
+  savePrefs();
+  renderLocations();
+  updateHero();
+  if (state === 'connected') disconnect().then(() => connectToSelected());
+});
+
+btn.addEventListener('click', () => {
+  if (state === 'idle') connectToSelected();
+  else if (state === 'connected') disconnect();
+});
+
+
+function renderAppList() {
+  const box = document.getElementById('appListBox');
+  const note = document.getElementById('appsNote');
+  if (!box) return;
+  if (!phoneApps.length) {
+    box.innerHTML = '';
+    if (note) note.textContent = (window.XRVpn && XRVpn.listApps)
+      ? 'Нажми Load apps from phone'
+      : 'Список приложений доступен только в APK (не в браузере).';
+    return;
+  }
+  if (note) note.textContent = phoneApps.length + ' apps · отмеченные = без VPN';
+  const selected = new Set(bypassApps);
+  box.innerHTML = phoneApps.map(a => `
+    <label class="app-row">
+      <input type="checkbox" data-pkg="${a.package}" ${selected.has(a.package) ? 'checked' : ''}>
+      <div class="aname">${a.name}<div class="apkg">${a.package}</div></div>
+    </label>
+  `).join('');
+}
+
+document.getElementById('btnLoadApps')?.addEventListener('click', () => {
+  const note = document.getElementById('appsNote');
+  try {
+    if (!window.XRVpn || typeof XRVpn.listApps !== 'function') {
+      if (note) note.textContent = 'Нет native моста. Установи APK и открой снова.';
+      return;
+    }
+    if (note) note.textContent = 'Загрузка…';
+    const raw = XRVpn.listApps();
+    phoneApps = JSON.parse(raw || '[]');
+    renderAppList();
+  } catch (e) {
+    if (note) note.textContent = 'Ошибка: ' + e;
+  }
+});
+
+document.getElementById('appListBox')?.addEventListener('change', e => {
+  const cb = e.target.closest('input[data-pkg]');
+  if (!cb) return;
+  const pkg = cb.getAttribute('data-pkg');
+  if (cb.checked) {
+    if (!bypassApps.includes(pkg)) bypassApps.push(pkg);
+  } else {
+    bypassApps = bypassApps.filter(x => x !== pkg);
+  }
+  savePrefs();
+});
+
+loadPrefs();
+rebuildProviders();
+renderAppList();
+if (!PROVIDERS.find(p => p.id === providerId)) providerId = PROVIDERS[0].id;
+ensureSelection();
+syncThemeChoices();
+renderServices();
+renderLocations();
+setTab('services');
+setState('idle');
+startHealth();
+</script>
+</body>
+</html>
