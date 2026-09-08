@@ -8,7 +8,6 @@ import android.content.Intent;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
-import android.system.OsConstants;
 import android.util.Log;
 
 import org.json.JSONArray;
@@ -20,12 +19,11 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Real VpnService: after establish(), Android shows the key/VPN icon
- * and identifies this app as the active VPN.
+ * VpnService with split routes + per-app bypass (addDisallowedApplication).
  *
- * This is a working local TUN with routing (full / only / bypass policy).
- * Packets are not forwarded to a remote WG server yet — for system identity
- * and split routes this is sufficient. Hook a WG engine to the TUN fd next.
+ * IMPORTANT: TUN is real (system VPN icon). Without a remote protocol engine,
+ * packets into the TUN are not forwarded — other apps may lose internet in
+ * full-tunnel mode. Bypass apps keep direct internet (not in VPN).
  */
 public class XrVpnService extends VpnService {
     public static final String ACTION_CONNECT = "com.xrvpn.CONNECT";
@@ -72,10 +70,6 @@ public class XrVpnService extends VpnService {
         stopTunnel();
         JSONObject cfg = new JSONObject(json != null ? json : "{}");
         String endpoint = cfg.optString("endpoint", "");
-        String host = endpoint;
-        if (endpoint.contains(":")) {
-            host = endpoint.substring(0, endpoint.lastIndexOf(':'));
-        }
 
         JSONObject routing = cfg.optJSONObject("routing");
         String mode = routing != null ? routing.optString("mode", "full") : "full";
@@ -90,32 +84,46 @@ public class XrVpnService extends VpnService {
             }
         }
 
+        List<String> bypassApps = new ArrayList<>();
+        JSONArray apps = cfg.optJSONArray("bypassApps");
+        if (apps != null) {
+            for (int i = 0; i < apps.length(); i++) {
+                String pkg = apps.optString(i, "").trim();
+                if (!pkg.isEmpty()) bypassApps.add(pkg);
+            }
+        }
+
         Builder builder = new Builder();
         builder.setSession("XR VPN");
         builder.setMtu(1280);
-        // Virtual interface address
         builder.addAddress("10.8.0.2", 32);
         builder.addDnsServer("1.1.1.1");
         builder.addDnsServer("9.9.9.9");
 
-        // Blocking own app traffic from VPN avoids feedback loops
+        // Always exclude self
         try {
             builder.addDisallowedApplication(getPackageName());
         } catch (Exception ignored) {}
 
+        // Apps that must NOT use VPN (YouTube, banking, etc.)
+        for (String pkg : bypassApps) {
+            try {
+                builder.addDisallowedApplication(pkg);
+                Log.i(TAG, "bypass app: " + pkg);
+            } catch (Exception e) {
+                Log.w(TAG, "cannot bypass " + pkg + ": " + e.getMessage());
+            }
+        }
+
         applyRoutes(builder, mode, list);
 
-        // Establish = system registers this app as VPN
         tunFd = builder.establish();
         if (tunFd == null) {
-            throw new IllegalStateException("VpnService.Builder.establish() returned null");
+            throw new IllegalStateException("establish() returned null");
         }
         RUNNING.set(true);
-        Log.i(TAG, "TUN established mode=" + mode + " endpoint=" + endpoint);
+        Log.i(TAG, "TUN up mode=" + mode + " bypassApps=" + bypassApps.size());
 
-        // Drain/read TUN in background so the interface stays healthy.
-        // Without a real userspace forwarder, traffic into TUN is discarded —
-        // user still sees system VPN indicator. Replace with WireGuard later.
         final ParcelFileDescriptor local = tunFd;
         new Thread(() -> {
             byte[] buf = new byte[32767];
@@ -123,10 +131,10 @@ public class XrVpnService extends VpnService {
                 while (RUNNING.get()) {
                     int n = in.read(buf);
                     if (n < 0) break;
-                    // TODO: encrypt + send to remote VPN server
+                    // TODO: WireGuard/OpenVPN forward — without this, full-tunnel breaks net
                 }
             } catch (Exception e) {
-                if (RUNNING.get()) Log.w(TAG, "tun read ended: " + e.getMessage());
+                if (RUNNING.get()) Log.w(TAG, "tun read: " + e.getMessage());
             }
         }, "xr-tun-reader").start();
     }
@@ -137,17 +145,12 @@ public class XrVpnService extends VpnService {
             for (String item : list) {
                 if (addOneRoute(b, item)) added = true;
             }
-            if (!added) {
-                Log.w(TAG, "only-mode: no valid routes, adding nothing (no full leak)");
-            }
+            if (!added) Log.w(TAG, "only-mode: no routes");
             return;
         }
-        // full & bypass: default route into tunnel
         b.addRoute("0.0.0.0", 0);
         if ("bypass".equals(mode)) {
-            for (String item : list) {
-                Log.i(TAG, "bypass (engine exclude): " + item);
-            }
+            for (String item : list) Log.i(TAG, "bypass host: " + item);
         }
     }
 
@@ -173,7 +176,6 @@ public class XrVpnService extends VpnService {
             }
             return ok;
         } catch (Exception e) {
-            Log.w(TAG, "skip route " + item + ": " + e.getMessage());
             return false;
         }
     }
@@ -190,7 +192,6 @@ public class XrVpnService extends VpnService {
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(
                     CH, "XR VPN", NotificationManager.IMPORTANCE_LOW);
-            ch.setDescription("VPN status");
             NotificationManager nm = getSystemService(NotificationManager.class);
             if (nm != null) nm.createNotificationChannel(ch);
         }
@@ -198,7 +199,6 @@ public class XrVpnService extends VpnService {
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
         PendingIntent pi = PendingIntent.getActivity(this, 0, open, flags);
-
         Notification.Builder nb = Build.VERSION.SDK_INT >= 26
                 ? new Notification.Builder(this, CH)
                 : new Notification.Builder(this);
@@ -218,7 +218,6 @@ public class XrVpnService extends VpnService {
 
     @Override
     public void onRevoke() {
-        // User disconnected VPN from system settings
         stopTunnel();
         stopForeground(true);
         stopSelf();
