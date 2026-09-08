@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.XRVpn" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowFullscreen">false</item>
+        <item name="android:statusBarColor">#050505</item>
+        <item name="android:navigationBarColor">#050505</item>
+        <item name="android:windowBackground">#050505</item>
+    </style>
+</resources>
