@@ -1,4 +1,4 @@
-package com.xeetr.xrvpn;
+package com.xrvpn.app;
 
 import android.net.VpnService;
 
