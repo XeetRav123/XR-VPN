@@ -5,7 +5,6 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.net.VpnService;
 import android.os.Bundle;
-import android.os.Environment;
 import android.util.TypedValue;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
@@ -14,8 +13,6 @@ import android.webkit.WebViewClient;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import java.io.File;
-import java.io.FileWriter;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 
@@ -25,58 +22,42 @@ public class MainActivity extends Activity {
     private String pendingConfig = null;
     private WebView webView;
 
-    // ── Ловушка краша — ставим ДО всего остального ───────────────────────────
-    private void installCrashHandler() {
-        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
-
-            // Собираем стектрейс в строку
-            StringWriter sw = new StringWriter();
-            throwable.printStackTrace(new PrintWriter(sw));
-            String trace = sw.toString();
-
-            // Пишем в файл на SD-карту (читай через MT Manager)
-            try {
-                File f = new File(Environment.getExternalStorageDirectory(), "xrvpn_crash.txt");
-                FileWriter fw = new FileWriter(f, false);
-                fw.write(trace);
-                fw.close();
-            } catch (Exception ignored) {}
-
-            // Показываем прямо на экране
-            runOnUiThread(() -> {
-                TextView tv = new TextView(this);
-                tv.setText("CRASH:\n\n" + trace);
-                tv.setTextColor(Color.RED);
-                tv.setBackgroundColor(Color.BLACK);
-                tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-                tv.setPadding(16, 16, 16, 16);
-
-                ScrollView sv = new ScrollView(this);
-                sv.addView(tv);
-                setContentView(sv);
-            });
-        });
-    }
-
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        installCrashHandler(); // ← первым делом
         super.onCreate(savedInstanceState);
+        try {
 
-        webView = new WebView(this);
-        setContentView(webView);
+            webView = new WebView(this);
+            setContentView(webView);
 
-        WebSettings s = webView.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);
-        s.setAllowFileAccess(true);
-        s.setCacheMode(WebSettings.LOAD_DEFAULT);
+            WebSettings s = webView.getSettings();
+            s.setJavaScriptEnabled(true);
+            s.setDomStorageEnabled(true);
+            s.setAllowFileAccess(true);
+            s.setCacheMode(WebSettings.LOAD_DEFAULT);
 
-        webView.addJavascriptInterface(new XRVpnBridge(), "XRVpn");
-        webView.setWebViewClient(new WebViewClient());
-        webView.loadUrl("file:///android_asset/index.html");
+            webView.addJavascriptInterface(new XRVpnBridge(), "XRVpn");
+            webView.setWebViewClient(new WebViewClient());
+            webView.loadUrl("file:///android_asset/index.html");
+
+        } catch (Throwable e) {
+            // Показываем ошибку прямо на экране
+            StringWriter sw = new StringWriter();
+            e.printStackTrace(new PrintWriter(sw));
+
+            TextView tv = new TextView(this);
+            tv.setText("CRASH:\n\n" + sw.toString());
+            tv.setTextColor(Color.RED);
+            tv.setBackgroundColor(Color.BLACK);
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            tv.setPadding(16, 16, 16, 16);
+
+            ScrollView sv = new ScrollView(this);
+            sv.addView(tv);
+            setContentView(sv);
+        }
     }
 
     @Override
