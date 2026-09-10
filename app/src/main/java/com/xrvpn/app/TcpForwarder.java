@@ -119,7 +119,7 @@ public class TcpForwarder {
                             out.flush();
                         }
                     }
-                    try { sock.shutdownOutput(); } catch (Exception ignored) {}
+                    try { finalSock.shutdownOutput(); } catch (Exception ignored) {}
                 } catch (Exception e) {
                     Log.w(TAG, "tx: " + e.getMessage());
                     s.close();
