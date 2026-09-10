@@ -21,42 +21,54 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
 /**
- * WebSocket client over TLS → Cloudflare Worker TCP proxy.
- * Protocol: GET /?host=&port= → 101 Switching Protocols → binary frames = raw TCP bytes.
+ * WebSocket → Cloudflare Worker.
+ * CRITICAL: protect(socket) MUST run BEFORE connect(), or packets enter the TUN
+ * and the phone kills the session → Worker logs "Stream was cancelled".
  */
 public class WsClient {
 
     private static final String TAG = "WsClient";
 
-    /** Mutable so Service can override from config. */
     public static volatile String WORKER_HOST = "xr-vpn.xeetrav329.workers.dev";
     public static final int WORKER_PORT = 443;
 
     private SSLSocket ssl;
     private InputStream in;
     private OutputStream out;
+    private Socket raw;
 
     private static final SecureRandom RNG = new SecureRandom();
 
     public void connect(VpnService svc, String targetHost, int targetPort) throws Exception {
         String host = WORKER_HOST;
-        Log.i(TAG, "WS connect worker=" + host + " target=" + targetHost + ":" + targetPort);
+        Log.i(TAG, "WS → worker=" + host + " target=" + targetHost + ":" + targetPort);
 
-        Socket raw = new Socket();
-        raw.connect(new InetSocketAddress(InetAddress.getByName(host), WORKER_PORT), 12_000);
+        raw = new Socket();
+        raw.setKeepAlive(true);
         raw.setTcpNoDelay(true);
-        raw.setSoTimeout(0); // streaming
+
+        // 1) protect BEFORE any connect — otherwise loop into TUN
         if (svc != null) {
             boolean ok = svc.protect(raw);
-            Log.i(TAG, "protect(socket)=" + ok);
+            Log.i(TAG, "protect(raw)=" + ok);
+            if (!ok) {
+                throw new IOException("protect() failed — socket would loop into VPN TUN");
+            }
+        } else {
+            Log.w(TAG, "VpnService null — protect skipped");
         }
 
+        // 2) connect to Worker on real network
+        raw.connect(new InetSocketAddress(InetAddress.getByName(host), WORKER_PORT), 15_000);
+
+        // 3) TLS (underlying socket already protected)
         SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
         ssl = (SSLSocket) factory.createSocket(raw, host, WORKER_PORT, true);
         ssl.setTcpNoDelay(true);
+        ssl.setUseClientMode(true);
         ssl.startHandshake();
 
-        in  = new BufferedInputStream(ssl.getInputStream());
+        in = new BufferedInputStream(ssl.getInputStream());
         out = ssl.getOutputStream();
 
         byte[] keyBytes = new byte[16];
@@ -77,20 +89,16 @@ public class WsClient {
         out.write(req.getBytes(StandardCharsets.UTF_8));
         out.flush();
 
-        // Read HTTP response headers
+        ssl.setSoTimeout(20_000);
         StringBuilder sb = new StringBuilder();
         int prev = 0, b;
-        long deadline = System.currentTimeMillis() + 15_000;
-        while (System.currentTimeMillis() < deadline) {
-            // temporary read timeout for handshake
-            ssl.setSoTimeout(15_000);
-            b = in.read();
-            if (b == -1) break;
+        while ((b = in.read()) != -1) {
             sb.append((char) b);
             if (prev == '\r' && b == '\n'
                     && sb.length() >= 4
                     && sb.substring(sb.length() - 4).equals("\r\n\r\n")) break;
             prev = b;
+            if (sb.length() > 8192) break;
         }
         ssl.setSoTimeout(0);
 
@@ -106,14 +114,12 @@ public class WsClient {
         if (out == null) throw new IOException("not connected");
         byte[] mask = new byte[4];
         RNG.nextBytes(mask);
-
         byte[] masked = new byte[data.length];
         for (int i = 0; i < data.length; i++)
             masked[i] = (byte) (data[i] ^ mask[i % 4]);
 
         ByteArrayOutputStream frame = new ByteArrayOutputStream(data.length + 14);
-        frame.write(0x82); // FIN + binary
-
+        frame.write(0x82);
         int len = data.length;
         if (len < 126) {
             frame.write(0x80 | len);
@@ -133,20 +139,14 @@ public class WsClient {
 
     public byte[] recv() throws IOException {
         if (in == null) return null;
-
         int b0 = in.read();
         int b1 = in.read();
         if (b0 == -1 || b1 == -1) return null;
 
         int opcode = b0 & 0x0F;
-        if (opcode == 0x8) return null; // close
-        if (opcode == 0x9) { // ping → pong
-            // ignore payload of ping for simplicity; still consume length
-            consumeFramePayload(b1);
-            return recv();
-        }
-        if (opcode == 0xA) { // pong
-            consumeFramePayload(b1);
+        if (opcode == 0x8) return null;
+        if (opcode == 0x9 || opcode == 0xA) {
+            consume(b1);
             return recv();
         }
 
@@ -158,21 +158,19 @@ public class WsClient {
             len = 0;
             for (int i = 0; i < 8; i++) len = (len << 8) | (in.read() & 0xFF);
         }
-        if (len > 2_000_000) throw new IOException("frame too large: " + len);
+        if (len > 2_000_000) throw new IOException("frame too large");
 
         byte[] mask = new byte[4];
         if (masked) readFully(mask);
-
         byte[] payload = new byte[(int) len];
         readFully(payload);
         if (masked) {
-            for (int i = 0; i < payload.length; i++)
-                payload[i] ^= mask[i % 4];
+            for (int i = 0; i < payload.length; i++) payload[i] ^= mask[i % 4];
         }
         return payload;
     }
 
-    private void consumeFramePayload(int b1) throws IOException {
+    private void consume(int b1) throws IOException {
         boolean masked = (b1 & 0x80) != 0;
         long len = b1 & 0x7F;
         if (len == 126) len = ((in.read() & 0xFF) << 8) | (in.read() & 0xFF);
@@ -181,11 +179,11 @@ public class WsClient {
             for (int i = 0; i < 8; i++) len = (len << 8) | (in.read() & 0xFF);
         }
         if (masked) {
-            byte[] mask = new byte[4];
-            readFully(mask);
+            byte[] m = new byte[4];
+            readFully(m);
         }
-        byte[] skip = new byte[(int) Math.min(len, 65536)];
         long left = len;
+        byte[] skip = new byte[4096];
         while (left > 0) {
             int n = in.read(skip, 0, (int) Math.min(left, skip.length));
             if (n < 0) break;
@@ -196,18 +194,18 @@ public class WsClient {
     public void close() {
         try {
             if (out != null) {
-                // masked close frame (client must mask)
                 byte[] mask = new byte[4];
                 RNG.nextBytes(mask);
-                out.write(new byte[]{
-                        (byte) 0x88, (byte) 0x80,
-                        mask[0], mask[1], mask[2], mask[3]
-                });
+                out.write(new byte[]{(byte) 0x88, (byte) 0x80, mask[0], mask[1], mask[2], mask[3]});
                 out.flush();
             }
         } catch (Exception ignored) {}
         try { if (ssl != null) ssl.close(); } catch (Exception ignored) {}
-        ssl = null; in = null; out = null;
+        try { if (raw != null) raw.close(); } catch (Exception ignored) {}
+        ssl = null;
+        raw = null;
+        in = null;
+        out = null;
     }
 
     private void readFully(byte[] buf) throws IOException {
