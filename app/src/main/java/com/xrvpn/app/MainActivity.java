@@ -1,184 +1,146 @@
-package com.xrvpn.app;
+package com.xeetr.xrvpn;
 
-import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
-import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageManager;
 import android.net.VpnService;
-import android.os.Build;
 import android.os.Bundle;
-import android.view.View;
-import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
-import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.FrameLayout;
-import android.widget.Toast;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
-
-import java.util.Collections;
-import java.util.List;
 
 public class MainActivity extends Activity {
-    public static final int REQ_VPN = 1001;
-    private WebView web;
-    private String pendingJson;
 
-    @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
+    // Код запроса разрешения на VPN
+    private static final int VPN_REQUEST_CODE = 1;
+
+    // Конфиг, ожидающий разрешения пользователя
+    private String pendingConfig = null;
+
+    private WebView webView;
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        hideSystemBars();
 
-        web = new WebView(this);
-        web.setLayoutParams(new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT));
-        setContentView(web);
+        webView = new WebView(this);
+        setContentView(webView);
 
-        WebSettings s = web.getSettings();
+        // Настройка WebView
+        WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setAllowFileAccess(true);
-        s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        web.setWebChromeClient(new WebChromeClient());
-        web.setWebViewClient(new WebViewClient());
-        web.addJavascriptInterface(new Bridge(), "XRVpn");
-        web.loadUrl("file:///android_asset/index.html");
-    }
+        s.setCacheMode(WebSettings.LOAD_DEFAULT);
 
-    private void hideSystemBars() {
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-        if (Build.VERSION.SDK_INT >= 30) {
-            getWindow().setDecorFitsSystemWindows(false);
-            final View decor = getWindow().getDecorView();
-            decor.setOnApplyWindowInsetsListener((v, insets) -> {
-                v.setBackgroundColor(0xFF050505);
-                return insets;
-            });
-        } else {
-            getWindow().getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-        }
-        getWindow().setStatusBarColor(0x00000000);
-        getWindow().setNavigationBarColor(0xFF050505);
+        // JS-мост: в index.html доступны XRVpn.connect(...) и XRVpn.disconnect()
+        webView.addJavascriptInterface(new XRVpnBridge(), "XRVpn");
+
+        webView.setWebViewClient(new WebViewClient());
+
+        // Загружаем UI из assets/index.html
+        webView.loadUrl("file:///android_asset/index.html");
     }
 
     @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) hideSystemBars();
+    protected void onDestroy() {
+        super.onDestroy();
+        if (webView != null) webView.destroy();
     }
 
-    private void notifyJs(boolean ok) {
-        final String js = "window.__xrVpnNativeResult && window.__xrVpnNativeResult(" + ok + ")";
-        web.post(() -> web.evaluateJavascript(js, null));
-    }
-
-    private void startServiceConnect(String json) {
-        Intent i = new Intent(this, XrVpnService.class);
-        i.setAction(XrVpnService.ACTION_CONNECT);
-        i.putExtra(XrVpnService.EXTRA_CONFIG, json);
-        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
-        else startService(i);
-    }
-
-    private void startServiceDisconnect() {
-        Intent i = new Intent(this, XrVpnService.class);
-        i.setAction(XrVpnService.ACTION_DISCONNECT);
-        startService(i);
-    }
+    // ── Обработка результата запроса разрешения VPN ────────────────────────
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQ_VPN) return;
-        if (resultCode == RESULT_OK && pendingJson != null) {
-            startServiceConnect(pendingJson);
-            notifyJs(true);
-            Toast.makeText(this, "VPN connected", Toast.LENGTH_SHORT).show();
-        } else {
-            notifyJs(false);
-            Toast.makeText(this, "VPN permission denied", Toast.LENGTH_SHORT).show();
+        if (requestCode == VPN_REQUEST_CODE) {
+            if (resultCode == RESULT_OK) {
+                // Пользователь разрешил — запускаем сервис
+                startVpn(pendingConfig);
+            } else {
+                // Отказал — уведомляем WebView
+                runOnUiThread(() ->
+                    webView.evaluateJavascript("if(window.onVpnDenied) onVpnDenied();", null)
+                );
+            }
+            pendingConfig = null;
         }
-        pendingJson = null;
     }
 
-    public class Bridge {
+    // ── Запуск / остановка сервиса ─────────────────────────────────────────
+
+    private void requestAndStart(String configJson) {
+        // Проверяем, нужно ли запрашивать разрешение
+        Intent intent = VpnService.prepare(this);
+        if (intent != null) {
+            // Нужно разрешение — запрашиваем и сохраняем конфиг
+            pendingConfig = configJson;
+            startActivityForResult(intent, VPN_REQUEST_CODE);
+        } else {
+            // Разрешение уже есть — сразу запускаем
+            startVpn(configJson);
+        }
+    }
+
+    private void startVpn(String configJson) {
+        Intent i = new Intent(this, XrVpnService.class);
+        i.setAction(XrVpnService.ACTION_CONNECT);
+        i.putExtra(XrVpnService.EXTRA_CONFIG, configJson);
+        startService(i);
+
+        // Уведомляем WebView что VPN запущен
+        runOnUiThread(() ->
+            webView.evaluateJavascript("if(window.onVpnStarted) onVpnStarted();", null)
+        );
+    }
+
+    private void stopVpn() {
+        Intent i = new Intent(this, XrVpnService.class);
+        i.setAction(XrVpnService.ACTION_DISCONNECT);
+        startService(i);
+
+        // Уведомляем WebView что VPN остановлен
+        runOnUiThread(() ->
+            webView.evaluateJavascript("if(window.onVpnStopped) onVpnStopped();", null)
+        );
+    }
+
+    // ── JS-мост ────────────────────────────────────────────────────────────
+
+    /**
+     * Используй из index.html так:
+     *
+     *   XRVpn.connect('{"routing":{"mode":"full"}}');
+     *   XRVpn.disconnect();
+     */
+    private class XRVpnBridge {
+
+        /**
+         * Запустить VPN.
+         * @param configJson  JSON-строка с полем routing.mode и опционально routing.list
+         */
         @JavascriptInterface
-        public boolean connect(String json) {
-            pendingJson = json;
-            Intent prepare = VpnService.prepare(MainActivity.this);
-            if (prepare != null) {
-                runOnUiThread(() -> startActivityForResult(prepare, REQ_VPN));
-                return true;
-            }
-            startServiceConnect(json);
-            runOnUiThread(() -> {
-                notifyJs(true);
-                Toast.makeText(MainActivity.this, "VPN connected", Toast.LENGTH_SHORT).show();
-            });
-            return true;
+        public void connect(String configJson) {
+            runOnUiThread(() -> requestAndStart(configJson));
         }
 
+        /**
+         * Остановить VPN.
+         */
         @JavascriptInterface
-        public boolean disconnect() {
-            startServiceDisconnect();
-            runOnUiThread(() ->
-                    Toast.makeText(MainActivity.this, "VPN disconnected", Toast.LENGTH_SHORT).show());
-            return true;
+        public void disconnect() {
+            runOnUiThread(() -> stopVpn());
         }
 
+        /**
+         * Вернуть текущий статус (можно вызвать из JS).
+         * @return "connected" или "disconnected"
+         */
         @JavascriptInterface
-        public String status() {
-            return XrVpnService.isRunning() ? "connected" : "idle";
-        }
-
-        @JavascriptInterface
-        public boolean isVpnActive() {
-            return XrVpnService.isRunning();
-        }
-
-        /** Список установленных приложений для split-tunnel (bypass apps) */
-        @JavascriptInterface
-        public String listApps() {
-            JSONArray arr = new JSONArray();
-            try {
-                PackageManager pm = getPackageManager();
-                List<ApplicationInfo> apps = pm.getInstalledApplications(PackageManager.GET_META_DATA);
-                Collections.sort(apps, (a, b) -> {
-                    String la = pm.getApplicationLabel(a).toString();
-                    String lb = pm.getApplicationLabel(b).toString();
-                    return la.compareToIgnoreCase(lb);
-                });
-                String self = getPackageName();
-                for (ApplicationInfo info : apps) {
-                    // user apps + launchable; skip self
-                    if (self.equals(info.packageName)) continue;
-                    boolean isSystem = (info.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
-                    // include non-system always; system only if launchable
-                    Intent launch = pm.getLaunchIntentForPackage(info.packageName);
-                    if (isSystem && launch == null) continue;
-                    JSONObject o = new JSONObject();
-                    o.put("package", info.packageName);
-                    o.put("name", pm.getApplicationLabel(info).toString());
-                    o.put("system", isSystem);
-                    arr.put(o);
-                }
-            } catch (Exception e) {
-                // return empty
-            }
-            return arr.toString();
+        public String getStatus() {
+            // Простая проверка — можно расширить через статическое поле в XrVpnService
+            return XrVpnService.isRunning() ? "connected" : "disconnected";
         }
     }
 }
