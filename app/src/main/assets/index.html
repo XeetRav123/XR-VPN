@@ -2,7 +2,7 @@
 <html lang="ru" data-theme="dark" data-accent="mono">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>XR VPN</title>
 <style>
   :root, html[data-theme="dark"][data-accent="mono"] {
@@ -90,7 +90,7 @@
     margin: 0 auto;
     display: flex;
     flex-direction: column;
-    padding: calc(12px + env(safe-area-inset-top, 0px)) 14px calc(10px + env(safe-area-inset-bottom, 0px));
+    padding: calc(28px + env(safe-area-inset-top, 24px)) 14px calc(12px + env(safe-area-inset-bottom, 0px));
   }
   .top {
     display: flex;
@@ -212,18 +212,23 @@
 
   .connect-btn {
     margin: 6px auto 10px;
-    width: 100%; max-width: 230px; height: 44px;
+    width: 100%; max-width: 230px; height: 48px;
     border-radius: 999px;
     border: 1px solid var(--line2);
     background: var(--bg1);
     color: var(--text);
     font-size: 11px; font-weight: 600;
     letter-spacing: 0.22em; text-transform: uppercase; cursor: pointer;
+    position: relative;
+    z-index: 20;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
   }
   .app.connected .connect-btn {
     background: var(--accent); color: var(--accent-contrast); border-color: var(--accent);
   }
-  .app.connecting .connect-btn { opacity: 0.55; pointer-events: none; }
+  .app.connecting .connect-btn { opacity: 0.7; }
 
   .tabs { display: flex; gap: 6px; margin-bottom: 8px; }
   .tab {
@@ -1047,21 +1052,21 @@ async function connectToSelected() {
     updateHero();
     return;
   }
+  // health "down" — предупреждение, но не блокируем (демо-пинг врёт)
   if (statusOf(hit.server.id) === 'down') {
-    heroSub.innerHTML = `No link<br><small>${hit.server.name} · выбери другой сервер</small>`;
-    return;
+    footer.textContent = 'Health: no link (connecting anyway)';
   }
   const routeList = (document.getElementById('routeList')?.value || '')
     .split(/\n+/).map(s => s.trim()).filter(Boolean);
   if (routeMode !== 'full' && !routeList.length) {
-    heroSub.innerHTML = `Routing list empty<br><small>Заполни список в Settings или выбери All traffic</small>`;
+    heroSub.innerHTML = `Routing list empty<br><small>Settings → All traffic или список</small>`;
     setTab('settings');
     return;
   }
   const payload = {
     providerId: p.id,
     providerName: p.name,
-    protocol: p.type,
+    protocol: p.type || 'XR',
     serverId: hit.server.id,
     name: hit.server.name,
     country: hit.country.name,
@@ -1071,48 +1076,61 @@ async function connectToSelected() {
     routing: { mode: routeMode, list: routeList },
     bypassApps: bypassApps.slice(),
   };
-  footer.textContent = routeMode === 'full'
-    ? 'Tunnel · all traffic'
-    : (routeMode === 'bypass' ? 'Tunnel · bypass ' + routeList.length : 'Tunnel · only ' + routeList.length);
+  window.__xrLastEndpoint = payload.endpoint;
+  footer.textContent = 'Connecting…';
   setState('connecting');
   showSpeedHud(true);
-  document.getElementById('spdDown').textContent = 'test…';
-  document.getElementById('spdUp').textContent = 'test…';
-  document.getElementById('spdPing').textContent = 'test…';
-  // first measurement while connecting
-  measureSpeedOnce(payload.endpoint).then(() => {
-    footer.textContent = 'Speed · ↓ ' + formatSpeed(lastSpeed.down) + ' · ping ' + (lastSpeed.ping ?? '—') + ' ms';
-  });
+  document.getElementById('spdDown').textContent = '…';
+  document.getElementById('spdUp').textContent = '…';
+  document.getElementById('spdPing').textContent = '…';
 
+  // Native Android bridge (MainActivity: void connect, callbacks onVpn*)
   if (window.XRVpn && typeof window.XRVpn.connect === 'function') {
     try {
-      const ok = await window.XRVpn.connect(JSON.stringify(payload));
-      if (ok) {
-        setState('connected');
-        startSpeedMonitor(payload.endpoint);
-      } else {
-        setState('idle');
-        stopSpeedMonitor();
-      }
+      window.XRVpn.connect(JSON.stringify(payload));
+      // Ждём onVpnStarted / onVpnDenied — не ждём return value
       return;
     } catch (e) {
+      console.warn(e);
       setState('idle');
       stopSpeedMonitor();
+      heroSub.innerHTML = 'Connect error<br><small>' + e + '</small>';
       return;
     }
   }
-  console.log('[XR VPN] connect', payload);
+  // Browser demo
+  console.log('[XR VPN] demo connect', payload);
   connectTimer = setTimeout(() => {
     setState('connected');
     startSpeedMonitor(payload.endpoint);
-  }, 1400);
+  }, 900);
 }
+
+window.onVpnStarted = function() {
+  setState('connected');
+  startSpeedMonitor(window.__xrLastEndpoint || '');
+  footer.textContent = 'VPN · system tunnel up';
+};
+window.onVpnStopped = function() {
+  setState('idle');
+  stopSpeedMonitor();
+  footer.textContent = 'Disconnected';
+};
+window.onVpnDenied = function() {
+  setState('idle');
+  stopSpeedMonitor();
+  heroSub.innerHTML = 'VPN permission denied<br><small>Разреши VPN в системе</small>';
+};
+window.__xrVpnNativeResult = function(ok) {
+  if (ok) window.onVpnStarted();
+  else window.onVpnDenied();
+};
 
 async function disconnect() {
   if (connectTimer) clearTimeout(connectTimer);
   stopSpeedMonitor();
   if (window.XRVpn && typeof window.XRVpn.disconnect === 'function') {
-    try { await window.XRVpn.disconnect(); } catch (e) {}
+    try { window.XRVpn.disconnect(); } catch (e) {}
   }
   setState('idle');
 }
@@ -1280,9 +1298,10 @@ locationList.addEventListener('click', e => {
   if (state === 'connected') disconnect().then(() => connectToSelected());
 });
 
-btn.addEventListener('click', () => {
+btn.addEventListener('click', (ev) => {
+  ev.preventDefault();
   if (state === 'idle') connectToSelected();
-  else if (state === 'connected') disconnect();
+  else if (state === 'connected' || state === 'connecting') disconnect();
 });
 
 
