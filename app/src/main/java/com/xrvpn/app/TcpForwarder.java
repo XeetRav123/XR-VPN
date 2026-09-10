@@ -105,6 +105,7 @@ public class TcpForwarder {
             sock.setTcpNoDelay(true);
             s.realSock = sock;
 
+            final Socket finalSock = sock;
             final OutputStream out = sock.getOutputStream();
 
             // TUN → real server
@@ -113,7 +114,7 @@ public class TcpForwarder {
                     while (true) {
                         byte[] chunk = s.dequeue();
                         if (chunk == null || (chunk.length == 0 && s.halfClosed)) {
-                            sock.shutdownOutput();
+                            finalSock.shutdownOutput();
                             break;
                         }
                         if (chunk.length > 0) { out.write(chunk); out.flush(); }
