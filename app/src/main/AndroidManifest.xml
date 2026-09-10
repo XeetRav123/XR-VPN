@@ -9,7 +9,7 @@
         android:allowBackup="false"
         android:label="XR VPN"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AppCompat.NoActionBar"
+        android:theme="@android:style/Theme.NoTitleBar"
         android:hardwareAccelerated="true">
 
         <!-- ── Главный экран (WebView) ───────────────────────────────── -->
