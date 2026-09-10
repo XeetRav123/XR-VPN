@@ -26,7 +26,7 @@ public class WsClient {
 
     // !! ВСТАВЬ СВОЙ URL ПОСЛЕ ДЕПЛОЯ WORKER !!
     // Пример: "my-xrvpn.username.workers.dev"
-    public static final String WORKER_HOST = "YOUR_WORKER.workers.dev";
+    public static final String WORKER_HOST = "https://xr-vpn.xeetrav329.workers.dev/";
     public static final int    WORKER_PORT = 443;
 
     private SSLSocket    ssl;
