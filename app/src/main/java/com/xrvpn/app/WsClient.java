@@ -14,19 +14,11 @@ import javax.net.ssl.SSLSocketFactory;
 /**
  * Минимальный WebSocket-клиент поверх TLS.
  * Подключается к Cloudflare Worker и туннелирует TCP-соединение.
- *
- * Использование:
- *   WsClient ws = new WsClient();
- *   ws.connect(svc, "google.com", 443);
- *   ws.send(data);
- *   byte[] resp = ws.recv();
- *   ws.close();
  */
 public class WsClient {
 
-    // !! ВСТАВЬ СВОЙ URL ПОСЛЕ ДЕПЛОЯ WORKER !!
-    // Пример: "my-xrvpn.username.workers.dev"
-    public static final String WORKER_HOST = "https://xr-vpn.xeetrav329.workers.dev/";
+    // Только hostname, без https:// и без /
+    public static final String WORKER_HOST = "xr-vpn.xeetrav329.workers.dev";
     public static final int    WORKER_PORT = 443;
 
     private SSLSocket    ssl;
@@ -35,28 +27,25 @@ public class WsClient {
 
     private static final SecureRandom RNG = new SecureRandom();
 
-    // ── Подключение ───────────────────────────────────────────────────────
-
     /**
      * @param svc        нужен для protect() — чтобы сокет не зациклился в VPN
      * @param targetHost куда Worker должен подключиться (напр. "google.com")
      * @param targetPort порт назначения (80, 443, ...)
      */
     public void connect(VpnService svc, String targetHost, int targetPort) throws Exception {
-        // Сначала raw-сокет — его protect() до TLS-handshake
-        Socket raw = new Socket(
-                InetAddress.getByName(WORKER_HOST), WORKER_PORT);
-        svc.protect(raw);  // выводим из-под VPN-туннеля
+        Socket raw = new Socket(InetAddress.getByName(WORKER_HOST), WORKER_PORT);
+        if (svc != null) {
+            svc.protect(raw);
+        }
 
-        // Оборачиваем в TLS
-        ssl = (SSLSocket) SSLSocketFactory.getDefault()
-                .createSocket(raw, WORKER_HOST, WORKER_PORT, true);
+        // getDefault() объявлен как SocketFactory — нужен явный cast к SSLSocketFactory
+        SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        ssl = (SSLSocket) factory.createSocket(raw, WORKER_HOST, WORKER_PORT, true);
         ssl.startHandshake();
 
         in  = new BufferedInputStream(ssl.getInputStream());
         out = ssl.getOutputStream();
 
-        // WebSocket HTTP-upgrade handshake
         byte[] keyBytes = new byte[16];
         RNG.nextBytes(keyBytes);
         String wsKey = Base64.encodeToString(keyBytes, Base64.NO_WRAP);
@@ -71,7 +60,6 @@ public class WsClient {
         out.write(req.getBytes("UTF-8"));
         out.flush();
 
-        // Читаем ответ до \r\n\r\n
         StringBuilder sb = new StringBuilder();
         int prev = 0, b;
         while ((b = in.read()) != -1) {
@@ -85,8 +73,6 @@ public class WsClient {
             throw new IOException("WS handshake failed: " + sb);
         }
     }
-
-    // ── Отправка данных ───────────────────────────────────────────────────
 
     public synchronized void send(byte[] data) throws IOException {
         byte[] mask = new byte[4];
@@ -103,11 +89,11 @@ public class WsClient {
         if (len < 126) {
             frame.write(0x80 | len);
         } else if (len < 65536) {
-            frame.write(0xFE);          // 0x80 | 126
+            frame.write(0xFE);
             frame.write(len >> 8);
             frame.write(len & 0xFF);
         } else {
-            frame.write(0xFF);          // 0x80 | 127
+            frame.write(0xFF);
             for (int i = 7; i >= 0; i--) frame.write((len >> (i * 8)) & 0xFF);
         }
         frame.write(mask);
@@ -117,16 +103,13 @@ public class WsClient {
         out.flush();
     }
 
-    // ── Приём данных ──────────────────────────────────────────────────────
-
-    /** Возвращает null если соединение закрыто. */
     public byte[] recv() throws IOException {
         int b0 = in.read();
         int b1 = in.read();
         if (b0 == -1 || b1 == -1) return null;
 
         int opcode = b0 & 0x0F;
-        if (opcode == 0x8) return null; // close frame
+        if (opcode == 0x8) return null;
 
         boolean masked = (b1 & 0x80) != 0;
         int len = b1 & 0x7F;
@@ -152,18 +135,13 @@ public class WsClient {
         return payload;
     }
 
-    // ── Закрытие ──────────────────────────────────────────────────────────
-
     public void close() {
         try {
-            // WebSocket close frame (unmasked — server side close)
             out.write(new byte[]{(byte)0x88, (byte)0x80, 0, 0, 0, 0});
             out.flush();
         } catch (Exception ignored) {}
-        try { ssl.close(); } catch (Exception ignored) {}
+        try { if (ssl != null) ssl.close(); } catch (Exception ignored) {}
     }
-
-    // ── Утилиты ───────────────────────────────────────────────────────────
 
     private void readFully(byte[] buf) throws IOException {
         int off = 0;
