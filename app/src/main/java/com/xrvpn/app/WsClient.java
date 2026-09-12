@@ -44,13 +44,12 @@ public class WsClient {
      */
     public void connect(VpnService svc, String targetHost, int targetPort) throws Exception {
         // Сначала raw-сокет — его protect() до TLS-handshake
-        Socket raw = new Socket(
-                InetAddress.getByName(WORKER_HOST), WORKER_PORT);
+        Socket raw = new Socket(InetAddress.getByName(WORKER_HOST), WORKER_PORT);
         svc.protect(raw);  // выводим из-под VPN-туннеля
 
         // Оборачиваем в TLS
-        ssl = (SSLSocket) SSLSocketFactory.getDefault()
-                .createSocket(raw, WORKER_HOST, WORKER_PORT, true);
+        SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        ssl = (SSLSocket) sf.createSocket(raw, WORKER_HOST, WORKER_PORT, true);
         ssl.startHandshake();
 
         in  = new BufferedInputStream(ssl.getInputStream());
