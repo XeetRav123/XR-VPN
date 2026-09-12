@@ -2,94 +2,76 @@ package com.xrvpn.app;
 
 import android.net.VpnService;
 import android.util.Base64;
-import android.util.Log;
 
-import java.io.BufferedInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.EOFException;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
 /**
- * WebSocket → Cloudflare Worker.
- * CRITICAL: protect(socket) MUST run BEFORE connect(), or packets enter the TUN
- * and the phone kills the session → Worker logs "Stream was cancelled".
+ * Минимальный WebSocket-клиент поверх TLS.
+ * Подключается к Cloudflare Worker и туннелирует TCP-соединение.
+ *
+ * Использование:
+ *   WsClient ws = new WsClient();
+ *   ws.connect(svc, "google.com", 443);
+ *   ws.send(data);
+ *   byte[] resp = ws.recv();
+ *   ws.close();
  */
 public class WsClient {
 
-    private static final String TAG = "WsClient";
+    // !! ВСТАВЬ СВОЙ URL ПОСЛЕ ДЕПЛОЯ WORKER !!
+    // Пример: "my-xrvpn.username.workers.dev"
+    public static final String WORKER_HOST = "xr-vpn.onrender.com";
+    public static final int    WORKER_PORT = 443;
 
-    public static volatile String WORKER_HOST = "xr-vpn.xeetrav329.workers.dev";
-    public static final int WORKER_PORT = 443;
-
-    private SSLSocket ssl;
-    private InputStream in;
+    private SSLSocket    ssl;
+    private InputStream  in;
     private OutputStream out;
-    private Socket raw;
 
     private static final SecureRandom RNG = new SecureRandom();
 
+    // ── Подключение ───────────────────────────────────────────────────────
+
+    /**
+     * @param svc        нужен для protect() — чтобы сокет не зациклился в VPN
+     * @param targetHost куда Worker должен подключиться (напр. "google.com")
+     * @param targetPort порт назначения (80, 443, ...)
+     */
     public void connect(VpnService svc, String targetHost, int targetPort) throws Exception {
-        String host = WORKER_HOST;
-        Log.i(TAG, "WS → worker=" + host + " target=" + targetHost + ":" + targetPort);
+        // Сначала raw-сокет — его protect() до TLS-handshake
+        Socket raw = new Socket(
+                InetAddress.getByName(WORKER_HOST), WORKER_PORT);
+        svc.protect(raw);  // выводим из-под VPN-туннеля
 
-        raw = new Socket();
-        raw.setKeepAlive(true);
-        raw.setTcpNoDelay(true);
-
-        // 1) protect BEFORE any connect — otherwise loop into TUN
-        if (svc != null) {
-            boolean ok = svc.protect(raw);
-            Log.i(TAG, "protect(raw)=" + ok);
-            if (!ok) {
-                throw new IOException("protect() failed — socket would loop into VPN TUN");
-            }
-        } else {
-            Log.w(TAG, "VpnService null — protect skipped");
-        }
-
-        // 2) connect to Worker on real network
-        raw.connect(new InetSocketAddress(InetAddress.getByName(host), WORKER_PORT), 15_000);
-
-        // 3) TLS (underlying socket already protected)
-        SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
-        ssl = (SSLSocket) factory.createSocket(raw, host, WORKER_PORT, true);
-        ssl.setTcpNoDelay(true);
-        ssl.setUseClientMode(true);
+        // Оборачиваем в TLS
+        ssl = (SSLSocket) SSLSocketFactory.getDefault()
+                .createSocket(raw, WORKER_HOST, WORKER_PORT, true);
         ssl.startHandshake();
 
-        in = new BufferedInputStream(ssl.getInputStream());
+        in  = new BufferedInputStream(ssl.getInputStream());
         out = ssl.getOutputStream();
 
+        // WebSocket HTTP-upgrade handshake
         byte[] keyBytes = new byte[16];
         RNG.nextBytes(keyBytes);
         String wsKey = Base64.encodeToString(keyBytes, Base64.NO_WRAP);
 
-        String path = "/?host=" + URLEncoder.encode(targetHost, "UTF-8")
-                + "&port=" + targetPort;
-
-        String req = "GET " + path + " HTTP/1.1\r\n"
-                + "Host: " + host + "\r\n"
-                + "Upgrade: websocket\r\n"
-                + "Connection: Upgrade\r\n"
-                + "Sec-WebSocket-Key: " + wsKey + "\r\n"
-                + "Sec-WebSocket-Version: 13\r\n"
-                + "User-Agent: XR-VPN/1.0\r\n"
-                + "\r\n";
-        out.write(req.getBytes(StandardCharsets.UTF_8));
+        String path = "/?host=" + targetHost + "&port=" + targetPort;
+        String req  = "GET " + path + " HTTP/1.1\r\n"
+                    + "Host: " + WORKER_HOST + "\r\n"
+                    + "Upgrade: websocket\r\n"
+                    + "Connection: Upgrade\r\n"
+                    + "Sec-WebSocket-Key: " + wsKey + "\r\n"
+                    + "Sec-WebSocket-Version: 13\r\n\r\n";
+        out.write(req.getBytes("UTF-8"));
         out.flush();
 
-        ssl.setSoTimeout(20_000);
+        // Читаем ответ до \r\n\r\n
         StringBuilder sb = new StringBuilder();
         int prev = 0, b;
         while ((b = in.read()) != -1) {
@@ -98,115 +80,90 @@ public class WsClient {
                     && sb.length() >= 4
                     && sb.substring(sb.length() - 4).equals("\r\n\r\n")) break;
             prev = b;
-            if (sb.length() > 8192) break;
         }
-        ssl.setSoTimeout(0);
-
-        String resp = sb.toString();
-        if (!resp.contains("101")) {
-            Log.e(TAG, "handshake fail: " + resp);
-            throw new IOException("WS handshake failed: " + resp);
+        if (!sb.toString().contains("101")) {
+            throw new IOException("WS handshake failed: " + sb);
         }
-        Log.i(TAG, "WS 101 OK → " + targetHost + ":" + targetPort);
     }
 
+    // ── Отправка данных ───────────────────────────────────────────────────
+
     public synchronized void send(byte[] data) throws IOException {
-        if (out == null) throw new IOException("not connected");
         byte[] mask = new byte[4];
         RNG.nextBytes(mask);
+
         byte[] masked = new byte[data.length];
         for (int i = 0; i < data.length; i++)
-            masked[i] = (byte) (data[i] ^ mask[i % 4]);
+            masked[i] = (byte)(data[i] ^ mask[i % 4]);
 
-        ByteArrayOutputStream frame = new ByteArrayOutputStream(data.length + 14);
-        frame.write(0x82);
+        ByteArrayOutputStream frame = new ByteArrayOutputStream();
+        frame.write(0x82); // FIN=1, opcode=2 (binary)
+
         int len = data.length;
         if (len < 126) {
             frame.write(0x80 | len);
         } else if (len < 65536) {
-            frame.write(0xFE);
-            frame.write((len >> 8) & 0xFF);
+            frame.write(0xFE);          // 0x80 | 126
+            frame.write(len >> 8);
             frame.write(len & 0xFF);
         } else {
-            frame.write(0xFF);
+            frame.write(0xFF);          // 0x80 | 127
             for (int i = 7; i >= 0; i--) frame.write((len >> (i * 8)) & 0xFF);
         }
         frame.write(mask);
         frame.write(masked);
+
         out.write(frame.toByteArray());
         out.flush();
     }
 
+    // ── Приём данных ──────────────────────────────────────────────────────
+
+    /** Возвращает null если соединение закрыто. */
     public byte[] recv() throws IOException {
-        if (in == null) return null;
         int b0 = in.read();
         int b1 = in.read();
         if (b0 == -1 || b1 == -1) return null;
 
         int opcode = b0 & 0x0F;
-        if (opcode == 0x8) return null;
-        if (opcode == 0x9 || opcode == 0xA) {
-            consume(b1);
-            return recv();
-        }
+        if (opcode == 0x8) return null; // close frame
 
         boolean masked = (b1 & 0x80) != 0;
-        long len = b1 & 0x7F;
+        int len = b1 & 0x7F;
+
         if (len == 126) {
-            len = ((in.read() & 0xFF) << 8) | (in.read() & 0xFF);
+            len = (in.read() << 8) | in.read();
         } else if (len == 127) {
             len = 0;
-            for (int i = 0; i < 8; i++) len = (len << 8) | (in.read() & 0xFF);
+            for (int i = 0; i < 8; i++) len = (len << 8) | in.read();
         }
-        if (len > 2_000_000) throw new IOException("frame too large");
 
         byte[] mask = new byte[4];
         if (masked) readFully(mask);
-        byte[] payload = new byte[(int) len];
+
+        byte[] payload = new byte[len];
         readFully(payload);
+
         if (masked) {
-            for (int i = 0; i < payload.length; i++) payload[i] ^= mask[i % 4];
+            for (int i = 0; i < payload.length; i++)
+                payload[i] ^= mask[i % 4];
         }
+
         return payload;
     }
 
-    private void consume(int b1) throws IOException {
-        boolean masked = (b1 & 0x80) != 0;
-        long len = b1 & 0x7F;
-        if (len == 126) len = ((in.read() & 0xFF) << 8) | (in.read() & 0xFF);
-        else if (len == 127) {
-            len = 0;
-            for (int i = 0; i < 8; i++) len = (len << 8) | (in.read() & 0xFF);
-        }
-        if (masked) {
-            byte[] m = new byte[4];
-            readFully(m);
-        }
-        long left = len;
-        byte[] skip = new byte[4096];
-        while (left > 0) {
-            int n = in.read(skip, 0, (int) Math.min(left, skip.length));
-            if (n < 0) break;
-            left -= n;
-        }
-    }
+    // ── Закрытие ──────────────────────────────────────────────────────────
 
     public void close() {
         try {
-            if (out != null) {
-                byte[] mask = new byte[4];
-                RNG.nextBytes(mask);
-                out.write(new byte[]{(byte) 0x88, (byte) 0x80, mask[0], mask[1], mask[2], mask[3]});
-                out.flush();
-            }
+            // WebSocket close frame (unmasked — server side close)
+            out.write(new byte[]{(byte)0x88, (byte)0x80, 0, 0, 0, 0});
+            out.flush();
         } catch (Exception ignored) {}
-        try { if (ssl != null) ssl.close(); } catch (Exception ignored) {}
-        try { if (raw != null) raw.close(); } catch (Exception ignored) {}
-        ssl = null;
-        raw = null;
-        in = null;
-        out = null;
+        try { ssl.close(); } catch (Exception ignored) {}
     }
+
+    // ── Утилиты ───────────────────────────────────────────────────────────
 
     private void readFully(byte[] buf) throws IOException {
         int off = 0;
