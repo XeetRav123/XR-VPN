@@ -24,9 +24,10 @@ import javax.net.ssl.SSLSocketFactory;
  */
 public class WsClient {
 
-    // !! ВСТАВЬ СВОЙ URL ПОСЛЕ ДЕПЛОЯ WORKER !!
-    // Пример: "my-xrvpn.username.workers.dev"
+    // IP адрес xr-vpn.onrender.com (резолвим заранее чтобы не зависнуть внутри туннеля)
+    // Если перестанет работать — узнай актуальный IP: ping xr-vpn.onrender.com
     public static final String WORKER_HOST = "xr-vpn.onrender.com";
+    public static final String WORKER_IP   = "216.24.57.7";
     public static final int    WORKER_PORT = 443;
 
     private SSLSocket    ssl;
@@ -34,6 +35,24 @@ public class WsClient {
     private OutputStream out;
 
     private static final SecureRandom RNG = new SecureRandom();
+
+    // ── Диагностика — пинг сервера ────────────────────────────────────────
+
+    /** Возвращает "OK" если сервер доступен, или текст ошибки. */
+    public static String ping() {
+        try {
+            javax.net.ssl.HttpsURLConnection conn = (javax.net.ssl.HttpsURLConnection)
+                    new java.net.URL("https://" + WORKER_HOST + "/").openConnection();
+            conn.setConnectTimeout(10_000);
+            conn.setReadTimeout(10_000);
+            conn.connect();
+            int code = conn.getResponseCode();
+            conn.disconnect();
+            return "OK:" + code;
+        } catch (Exception e) {
+            return "ERR:" + e.getMessage();
+        }
+    }
 
     // ── Подключение ───────────────────────────────────────────────────────
 
@@ -43,11 +62,11 @@ public class WsClient {
      * @param targetPort порт назначения (80, 443, ...)
      */
     public void connect(VpnService svc, String targetHost, int targetPort) throws Exception {
-        // Сначала raw-сокет — его protect() до TLS-handshake
-        Socket raw = new Socket(InetAddress.getByName(WORKER_HOST), WORKER_PORT);
-        svc.protect(raw);  // выводим из-под VPN-туннеля
+        // Подключаемся по IP (не по домену) — иначе DNS зависнет внутри VPN туннеля
+        Socket raw = new Socket(InetAddress.getByName(WORKER_IP), WORKER_PORT);
+        svc.protect(raw);
 
-        // Оборачиваем в TLS
+        // TLS с правильным hostname для SNI
         SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
         ssl = (SSLSocket) sf.createSocket(raw, WORKER_HOST, WORKER_PORT, true);
         ssl.startHandshake();
