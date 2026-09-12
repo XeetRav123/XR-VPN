@@ -8,141 +8,194 @@ import android.content.Intent;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
-import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class XrVpnService extends VpnService {
 
-    public static final String ACTION_CONNECT = "com.xeetr.xrvpn.CONNECT";
-    public static final String ACTION_DISCONNECT = "com.xeetr.xrvpn.DISCONNECT";
-    public static final String EXTRA_CONFIG = "config";
+    public static final String ACTION_CONNECT    = "com.xrvpn.app.CONNECT";
+    public static final String ACTION_DISCONNECT = "com.xrvpn.app.DISCONNECT";
+    public static final String EXTRA_CONFIG      = "config";
 
-    private static final String TAG = "XrVpnService";
-    private static final String CH = "xr_vpn";
-    private static final int NID = 42;
+    private static final String CHANNEL_ID  = "xrvpn_channel";
+    private static final int    NOTIF_ID    = 1;
+    private static final long   RECONNECT_DELAY_MS = 5_000; // 5 сек между попытками
 
     private static volatile boolean running = false;
     public static boolean isRunning() { return running; }
 
     private ParcelFileDescriptor tun;
-    private PacketForwarder forwarder;
+    private PacketForwarder      forwarder;
+    private Thread               watchdog;
+    private volatile boolean     shouldRun = false;
+    private String               lastConfig;
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) {
-            stopSelf();
-            return START_NOT_STICKY;
-        }
-        startForeground(NID, notif("Starting…"));
-
+        if (intent == null) return START_STICKY;
         if (ACTION_CONNECT.equals(intent.getAction())) {
-            boolean ok = connect(intent.getStringExtra(EXTRA_CONFIG));
-            if (ok) {
-                startForeground(NID, notif("Connected · CF Worker exit"));
-                return START_STICKY;
-            }
-            startForeground(NID, notif("Failed"));
+            lastConfig = intent.getStringExtra(EXTRA_CONFIG);
+            shouldRun  = true;
+            startForegroundNotification();
+            startWatchdog();
+        } else {
+            shouldRun = false;
+            disconnect();
             stopForeground(true);
             stopSelf();
-            return START_NOT_STICKY;
         }
-        disconnect();
-        stopForeground(true);
-        stopSelf();
-        return START_NOT_STICKY;
+        return START_STICKY;
     }
 
-    private boolean connect(String json) {
+    @Override
+    public void onDestroy() {
+        shouldRun = false;
         disconnect();
-        try {
-            JSONObject cfg = json != null ? new JSONObject(json) : new JSONObject();
-            String wh = cfg.optString("workerHost", "").trim();
-            if (!wh.isEmpty()) {
-                wh = wh.replace("https://", "").replace("http://", "");
-                int s = wh.indexOf('/');
-                if (s >= 0) wh = wh.substring(0, s);
-                WsClient.WORKER_HOST = wh;
+        super.onDestroy();
+    }
+
+    // ── Watchdog — следит за соединением и переподключает ─────────────────
+
+    private void startWatchdog() {
+        if (watchdog != null && watchdog.isAlive()) return;
+
+        watchdog = new Thread(() -> {
+            while (shouldRun) {
+                try {
+                    connect(lastConfig);
+
+                    // Ждём пока форвардер жив
+                    while (shouldRun && forwarder != null && !forwarder.isStopped()) {
+                        Thread.sleep(1_000);
+                    }
+
+                    if (!shouldRun) break;
+
+                    // Форвардер упал — чистим и ждём перед переподключением
+                    disconnectInternal();
+                    running = false;
+                    updateNotification("Переподключение...");
+                    Thread.sleep(RECONNECT_DELAY_MS);
+
+                } catch (InterruptedException e) {
+                    break;
+                } catch (Exception e) {
+                    try { Thread.sleep(RECONNECT_DELAY_MS); } catch (InterruptedException ie) { break; }
+                }
             }
-            Log.i(TAG, "worker=" + WsClient.WORKER_HOST);
+        }, "xr-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
+    }
+
+    // ── Connect / Disconnect ───────────────────────────────────────────────
+
+    private void connect(String json) {
+        disconnectInternal();
+        try {
+            JSONObject cfg     = json != null ? new JSONObject(json) : new JSONObject();
+            JSONObject routing = cfg.optJSONObject("routing");
+            String     mode    = routing != null ? routing.optString("mode", "full") : "full";
+            JSONArray  list    = routing != null ? routing.optJSONArray("list") : null;
 
             Builder b = new Builder()
                     .setSession("XR VPN")
                     .setMtu(1500)
                     .addAddress("10.111.0.1", 30)
-                    // Non-Cloudflare DNS (Worker cannot dial 1.1.1.1)
                     .addDnsServer("8.8.8.8")
-                    .addDnsServer("9.9.9.9")
-                    .addRoute("0.0.0.0", 0)
+                    .addDnsServer("1.1.1.1")
                     .addDisallowedApplication(getPackageName());
 
-            JSONArray apps = cfg.optJSONArray("bypassApps");
-            if (apps != null) {
-                for (int i = 0; i < apps.length(); i++) {
-                    String p = apps.optString(i, "").trim();
-                    if (p.isEmpty()) continue;
-                    try { b.addDisallowedApplication(p); } catch (Exception ignored) {}
-                }
+            switch (mode) {
+                case "only":
+                    if (list != null)
+                        for (int i = 0; i < list.length(); i++) addCidr(b, list.optString(i));
+                    break;
+                default:
+                    b.addRoute("0.0.0.0", 0);
+                    break;
             }
 
             tun = b.establish();
-            if (tun == null) return false;
-
-            JSONObject routing = cfg.optJSONObject("routing");
-            String mode = routing != null ? routing.optString("mode", "full") : "full";
-            JSONArray list = routing != null ? routing.optJSONArray("list") : null;
+            if (tun == null) return;
 
             forwarder = new PacketForwarder(this, tun, mode, list);
-            new Thread(forwarder, "xr-fwd").start();
+            new Thread(forwarder, "xr-forwarder").start();
+
             running = true;
-            return true;
+            updateNotification("Подключено");
+
         } catch (Exception e) {
-            Log.e(TAG, "connect", e);
-            disconnect();
-            return false;
+            e.printStackTrace();
+            disconnectInternal();
         }
     }
 
-    public void disconnect() {
-        running = false;
-        if (forwarder != null) {
-            forwarder.stop();
-            forwarder = null;
-        }
+    private void disconnectInternal() {
+        if (forwarder != null) { forwarder.stop(); forwarder = null; }
         if (tun != null) {
             try { tun.close(); } catch (Exception ignored) {}
             tun = null;
         }
+        running = false;
     }
 
-    @Override public void onDestroy() { disconnect(); super.onDestroy(); }
-    @Override public void onRevoke() {
-        disconnect();
-        stopForeground(true);
-        stopSelf();
-        super.onRevoke();
+    public void disconnect() {
+        shouldRun = false;
+        if (watchdog != null) { watchdog.interrupt(); watchdog = null; }
+        disconnectInternal();
     }
 
-    private Notification notif(String text) {
-        if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel c = new NotificationChannel(CH, "XR VPN",
-                    NotificationManager.IMPORTANCE_LOW);
-            NotificationManager nm = getSystemService(NotificationManager.class);
-            if (nm != null) nm.createNotificationChannel(c);
-        }
-        Intent open = new Intent(this, MainActivity.class);
-        int f = PendingIntent.FLAG_UPDATE_CURRENT;
-        if (Build.VERSION.SDK_INT >= 23) f |= PendingIntent.FLAG_IMMUTABLE;
-        PendingIntent pi = PendingIntent.getActivity(this, 0, open, f);
-        Notification.Builder nb = Build.VERSION.SDK_INT >= 26
-                ? new Notification.Builder(this, CH)
-                : new Notification.Builder(this);
-        return nb.setContentTitle("XR VPN")
-                .setContentText(text)
+    // ── Foreground notification ────────────────────────────────────────────
+
+    private void startForegroundNotification() {
+        createChannel();
+        startForeground(NOTIF_ID, buildNotification("Подключено"));
+    }
+
+    private void updateNotification(String text) {
+        NotificationManager nm =
+                (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (nm != null) nm.notify(NOTIF_ID, buildNotification(text));
+    }
+
+    private Notification buildNotification(String text) {
+        Intent stopIntent = new Intent(this, XrVpnService.class);
+        stopIntent.setAction(ACTION_DISCONNECT);
+        PendingIntent stopPi = PendingIntent.getService(this, 0, stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        Notification.Builder b = new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_lock_lock)
-                .setContentIntent(pi)
+                .setContentTitle("XR VPN")
+                .setContentText(text)
                 .setOngoing(true)
-                .build();
+                .addAction(android.R.drawable.ic_delete, "Отключить", stopPi);
+
+        return b.build();
+    }
+
+    private void createChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel ch = new NotificationChannel(
+                    CHANNEL_ID, "XR VPN", NotificationManager.IMPORTANCE_LOW);
+            ch.setDescription("Статус VPN соединения");
+            NotificationManager nm =
+                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null) nm.createNotificationChannel(ch);
+        }
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────
+
+    private static void addCidr(Builder b, String cidr) {
+        if (cidr == null || cidr.isEmpty()) return;
+        try {
+            String[] p = cidr.contains("/") ? cidr.split("/") : new String[]{cidr, "32"};
+            b.addRoute(p[0].trim(), Integer.parseInt(p[1].trim()));
+        } catch (Exception ignored) {}
     }
 }

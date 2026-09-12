@@ -81,4 +81,5 @@ public class PacketForwarder implements Runnable {
     }
 
     void stop() { running = false; }
+    boolean isStopped() { return !running; }
 }

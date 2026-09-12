@@ -1,138 +1,122 @@
 package com.xrvpn.app;
 
 import android.net.VpnService;
-import android.util.Log;
 
 import java.util.Arrays;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * TCP via Cloudflare Worker WebSocket proxy (foreign exit).
- * Order: open WS+remote FIRST, then SYN-ACK to app (critical for HTTPS).
+ * TCP-форвардер через Cloudflare Worker (WebSocket + TLS).
+ * Трафик зашифрован между телефоном и Worker.
  */
 public class TcpForwarder {
 
-    private static final String TAG = "TcpForwarder";
-    private static final AtomicLong ISN = new AtomicLong(
-            (System.currentTimeMillis() / 1000L) << 10);
+    private static final AtomicLong ISN_CTR = new AtomicLong(
+            (System.currentTimeMillis() / 1000L) << 10 & 0xFFFFFFFFL);
 
-    private final VpnService svc;
+    private final VpnService      svc;
     private final PacketForwarder fwd;
-    private final Map<String, Session> table = new ConcurrentHashMap<>();
+    private final Map<String, TcpSession> table = new ConcurrentHashMap<>();
 
     TcpForwarder(VpnService svc, PacketForwarder fwd) {
-        this.svc = svc;
-        this.fwd = fwd;
+        this.svc = svc; this.fwd = fwd;
     }
 
     void handle(byte[] pkt, int ihl, byte[] srcIP, byte[] dstIP) {
-        int sp = IpUtil.tcpSrcPort(pkt, ihl);
-        int dp = IpUtil.tcpDstPort(pkt, ihl);
-        int flags = IpUtil.tcpFlags(pkt, ihl);
-        long seq = IpUtil.tcpSeq(pkt, ihl);
-        String key = key(srcIP, sp, dstIP, dp);
+        int  srcPort  = IpUtil.tcpSrcPort(pkt, ihl);
+        int  dstPort  = IpUtil.tcpDstPort(pkt, ihl);
+        int  flags    = IpUtil.tcpFlags(pkt, ihl);
+        long theirSeq = IpUtil.tcpSeq(pkt, ihl);
+        String key    = key(srcIP, srcPort, dstIP, dstPort);
 
+        // RST
         if ((flags & IpUtil.RST) != 0) {
-            Session s = table.remove(key);
+            TcpSession s = table.remove(key);
             if (s != null) s.close();
             return;
         }
 
-        // New connection
+        // SYN — новое соединение
         if ((flags & IpUtil.SYN) != 0 && (flags & IpUtil.ACK) == 0) {
-            Session old = table.remove(key);
+            TcpSession old = table.remove(key);
             if (old != null) old.close();
 
-            long myIsn = ISN.getAndAdd(64) & 0xffffffffL;
-            Session s = new Session(srcIP, sp, dstIP, dp,
-                    (seq + 1) & 0xffffffffL, (myIsn + 1) & 0xffffffffL);
+            long myISN = ISN_CTR.getAndAdd(128) & 0xFFFFFFFFL;
+            TcpSession s = new TcpSession(srcIP, srcPort, dstIP, dstPort,
+                    (theirSeq + 1) & 0xFFFFFFFFL,
+                    (myISN   + 1) & 0xFFFFFFFFL);
             table.put(key, s);
 
-            // Connect Worker BEFORE answering app
-            new Thread(() -> openAndRelay(s, key, myIsn), "tcp-open").start();
+            toTun(s, IpUtil.SYN | IpUtil.ACK, myISN, s.peerNextSeq, null);
+            new Thread(() -> relay(s, key), "tcp-relay").start();
             return;
         }
 
-        Session s = table.get(key);
+        TcpSession s = table.get(key);
         if (s == null) {
-            rst(dstIP, dp, srcIP, sp, seq);
+            fwd.writeToTun(IpUtil.tcpPacket(dstIP, dstPort, srcIP, srcPort,
+                    0L, (theirSeq + 1) & 0xFFFFFFFFL, IpUtil.RST | IpUtil.ACK, null));
             return;
         }
 
+        // FIN
         if ((flags & IpUtil.FIN) != 0) {
-            s.peerSeq = (seq + 1) & 0xffffffffL;
-            toTun(s, IpUtil.ACK, s.mySeq, s.peerSeq, null);
-            s.halfClose = true;
-            s.q.offer(new byte[0]);
+            s.peerNextSeq = (theirSeq + 1) & 0xFFFFFFFFL;
+            toTun(s, IpUtil.ACK, s.myNextSeq, s.peerNextSeq, null);
+            s.halfClose();
             return;
         }
 
-        int off = IpUtil.tcpDataOff(pkt, ihl);
-        int len = pkt.length - off;
-        if (len > 0 && s.ready) {
-            s.peerSeq = (seq + len) & 0xffffffffL;
-            s.q.offer(Arrays.copyOfRange(pkt, off, off + len));
-            toTun(s, IpUtil.ACK, s.mySeq, s.peerSeq, null);
+        // Данные
+        int dataOff = IpUtil.tcpDataOff(pkt, ihl);
+        int dataLen = pkt.length - dataOff;
+        if (dataLen > 0) {
+            s.peerNextSeq = (theirSeq + dataLen) & 0xFFFFFFFFL;
+            s.enqueue(pkt, dataOff, dataLen);
+            toTun(s, IpUtil.ACK, s.myNextSeq, s.peerNextSeq, null);
         }
     }
 
-    private void openAndRelay(Session s, String key, long myIsn) {
+    private void relay(TcpSession s, String key) {
         WsClient ws = new WsClient();
         try {
-            String host = ip(s.dstIP);
-            // Skip Cloudflare IPs — Worker cannot TCP to CF ranges
-            if (isCloudflareIp(s.dstIP)) {
-                Log.w(TAG, "skip CF IP " + host);
-                rst(s.dstIP, s.dstPort, s.srcIP, s.srcPort, s.peerSeq - 1);
-                table.remove(key);
-                return;
-            }
+            // Целевой IP в строку для передачи Worker-у
+            byte[] d = s.dstIP;
+            String host = (d[0]&0xFF)+"."+(d[1]&0xFF)+"."+(d[2]&0xFF)+"."+(d[3]&0xFF);
 
-            Log.i(TAG, "WS open " + host + ":" + s.dstPort);
+            // Подключаемся через Worker (TLS-зашифрованный WebSocket)
             ws.connect(svc, host, s.dstPort);
             s.ws = ws;
-            s.ready = true;
 
-            // Now tell the app connection is up
-            toTun(s, IpUtil.SYN | IpUtil.ACK, myIsn, s.peerSeq, null);
-            Log.i(TAG, "SYN-ACK sent, tunnel ready " + host + ":" + s.dstPort);
-
-            // TUN → Worker
+            // TUN → Worker (отдельный поток)
+            final WsClient finalWs = ws;
             new Thread(() -> {
                 try {
                     while (true) {
-                        byte[] chunk = s.q.poll(60, TimeUnit.SECONDS);
-                        if (chunk == null) continue;
-                        if (chunk.length == 0 && s.halfClose) break;
-                        if (chunk.length > 0) ws.send(chunk);
+                        byte[] chunk = s.dequeue();
+                        if (chunk == null || (chunk.length == 0 && s.halfClosed)) break;
+                        if (chunk.length > 0) finalWs.send(chunk);
                     }
-                } catch (Exception e) {
-                    Log.w(TAG, "tx " + e.getMessage());
-                } finally {
-                    s.close();
-                }
+                } catch (Exception e) { s.close(); }
             }, "tcp-tx").start();
 
-            // Worker → TUN
+            // Worker → TUN (этот поток)
             byte[] data;
             while ((data = ws.recv()) != null) {
-                if (data.length == 0) continue;
-                toTun(s, IpUtil.PSH | IpUtil.ACK, s.mySeq, s.peerSeq, data);
-                s.mySeq = (s.mySeq + data.length) & 0xffffffffL;
+                toTun(s, IpUtil.PSH | IpUtil.ACK, s.myNextSeq, s.peerNextSeq, data);
+                s.myNextSeq = (s.myNextSeq + data.length) & 0xFFFFFFFFL;
             }
-            toTun(s, IpUtil.FIN | IpUtil.ACK, s.mySeq, s.peerSeq, null);
-            s.mySeq = (s.mySeq + 1) & 0xffffffffL;
+
+            // Сервер закрыл соединение
+            toTun(s, IpUtil.FIN | IpUtil.ACK, s.myNextSeq, s.peerNextSeq, null);
+            s.myNextSeq = (s.myNextSeq + 1) & 0xFFFFFFFFL;
 
         } catch (Exception e) {
-            Log.e(TAG, "open fail " + ip(s.dstIP) + ":" + s.dstPort + " → " + e.getMessage());
-            if (!s.ready) {
-                rst(s.dstIP, s.dstPort, s.srcIP, s.srcPort, s.peerSeq - 1);
-            } else {
-                toTun(s, IpUtil.RST | IpUtil.ACK, s.mySeq, s.peerSeq, null);
+            if (!s.closed) {
+                fwd.writeToTun(IpUtil.tcpPacket(s.dstIP, s.dstPort, s.srcIP, s.srcPort,
+                        s.myNextSeq, s.peerNextSeq, IpUtil.RST, null));
             }
         } finally {
             table.remove(key);
@@ -141,63 +125,55 @@ public class TcpForwarder {
         }
     }
 
-    private void toTun(Session s, int flags, long seq, long ack, byte[] data) {
+    private void toTun(TcpSession s, int flags, long seq, long ack, byte[] data) {
         fwd.writeToTun(IpUtil.tcpPacket(
-                s.dstIP, s.dstPort, s.srcIP, s.srcPort, seq, ack, flags, data));
+                s.dstIP, s.dstPort,
+                s.srcIP, s.srcPort,
+                seq, ack, flags, data));
     }
 
-    private void rst(byte[] fromIP, int fromPort, byte[] toIP, int toPort, long ack) {
-        long a = ack & 0xffffffffL;
-        if (a == 0xffffffffL) a = 0; // safety
-        fwd.writeToTun(IpUtil.tcpPacket(fromIP, fromPort, toIP, toPort,
-                0, (a + 1) & 0xffffffffL, IpUtil.RST | IpUtil.ACK, null));
-    }
-
-    void closeAll() {
-        for (Session s : table.values()) s.close();
-        table.clear();
-    }
-
-    /** Rough CF ranges that Workers cannot dial */
-    private static boolean isCloudflareIp(byte[] ip) {
-        int a = ip[0] & 0xff, b = ip[1] & 0xff;
-        // 1.0.0.0/8 and 1.1.1.0 style — 1.1.1.1
-        if (a == 1 && b == 1) return true;
-        if (a == 1 && b == 0) return true;
-        // 104.16–104.31, 172.64–172.71, 162.158–162.159, 188.114, 190.93, 197.234, 198.41
-        if (a == 104 && b >= 16 && b <= 31) return true;
-        if (a == 172 && b >= 64 && b <= 71) return true;
-        if (a == 162 && (b == 158 || b == 159)) return true;
-        if (a == 188 && b == 114) return true;
-        if (a == 198 && b == 41) return true;
-        return false;
-    }
+    void closeAll() { table.values().forEach(TcpSession::close); table.clear(); }
 
     private static String key(byte[] si, int sp, byte[] di, int dp) {
-        return ip(si) + ":" + sp + ">" + ip(di) + ":" + dp;
+        return UdpForwarder.ip(si)+":"+sp+">"+UdpForwarder.ip(di)+":"+dp;
     }
 
-    static String ip(byte[] a) {
-        return (a[0] & 0xff) + "." + (a[1] & 0xff) + "." + (a[2] & 0xff) + "." + (a[3] & 0xff);
-    }
-
-    static class Session {
+    static class TcpSession {
         final byte[] srcIP, dstIP;
-        final int srcPort, dstPort;
-        volatile long peerSeq, mySeq;
-        volatile boolean ready, halfClose, closed;
-        volatile WsClient ws;
-        final LinkedBlockingQueue<byte[]> q = new LinkedBlockingQueue<>();
+        final int    srcPort, dstPort;
 
-        Session(byte[] s, int sp, byte[] d, int dp, long peer, long my) {
-            srcIP = s; srcPort = sp; dstIP = d; dstPort = dp;
-            peerSeq = peer; mySeq = my;
+        volatile long    peerNextSeq;
+        volatile long    myNextSeq;
+        volatile WsClient ws;
+        volatile boolean  closed, halfClosed;
+
+        private final LinkedBlockingQueue<byte[]> queue = new LinkedBlockingQueue<>();
+
+        TcpSession(byte[] srcIP, int srcPort, byte[] dstIP, int dstPort,
+                   long peerNextSeq, long myNextSeq) {
+            this.srcIP = srcIP; this.srcPort = srcPort;
+            this.dstIP = dstIP; this.dstPort = dstPort;
+            this.peerNextSeq = peerNextSeq;
+            this.myNextSeq   = myNextSeq;
+        }
+
+        void enqueue(byte[] pkt, int off, int len) {
+            if (!closed) queue.offer(Arrays.copyOfRange(pkt, off, off + len));
+        }
+
+        byte[] dequeue() {
+            try { return queue.poll(30, TimeUnit.SECONDS); }
+            catch (InterruptedException e) { return null; }
+        }
+
+        void halfClose() {
+            halfClosed = true;
+            queue.offer(new byte[0]);
         }
 
         void close() {
-            closed = true;
-            halfClose = true;
-            q.offer(new byte[0]);
+            closed = true; halfClosed = true;
+            queue.offer(new byte[0]);
             try { if (ws != null) ws.close(); } catch (Exception ignored) {}
         }
     }
